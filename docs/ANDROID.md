@@ -176,6 +176,34 @@ cd android
 | Python/Kotlin 金标准一致率 | 部分（TextNorm/BM25 已对照；FormulaMatcher 留 Phase 4） |
 | Crash-free / ANR / P95 | 需真机与灰度环境，非本仓库可验收 |
 
+## 5.5 v1.1：UI 美化 + VIP 版本（standard / vip 双 flavor）
+
+**UI**：M3 形状体系（卡片 16dp 圆角）、古籍正文衬线字族、墨绿渐变 Hero
+首页头部、注家紫 tertiary 色、暗色方案完善。
+
+**VIP flavor**（`applicationId org.impfai.hermes.vip`，可与 standard 并存安装）：
+
+1. **全量知识库进包**（构建期从 `backend/data` 同源复制，约 9.4MB 原始 /
+   APK 内压缩）：注家规则 1.9MB（九注家逐条对齐）、异文规则、条文关系
+   1.2MB、初始归纳规则 1.5MB、六经/鉴别/误治/治法规则、语料 manifest、
+   **139 个 Skill**（SKILL.md + rules + examples，418 文件）。
+   离线条文详情升级为全息：异文/注家/关系/归纳规则不再依赖服务端。
+2. **Skill 库浏览器**：分类筛选 + SKILL.md 阅读（首页 VIP 卡片进入）。
+3. **直连大模型（BYOK）**：设置页配置服务商（Anthropic / OpenAI 兼容
+   端点）+ API Key + 可选 Base URL/模型名；智能体页双通道切换。
+   直连流水线：**本地 BM25 取证 → 大模型限定在证据内作答 →
+   本地 CitationGuard 核验引用**（verified / outside_evidence /
+   unsupported 三级，√/△/× 徽章照旧）。
+
+**VIP 安全边界（对原方案第十节的修改声明）**：原方案"不建议 Android
+直接调用外部大模型"在 VIP 版按需求方要求放宽为 BYOK 模式，边界如实声明：
+- 用户自带 Key 仅存本机 DataStore（`allowBackup=false`，不入云备份），
+  只发送至用户配置的模型端点，绝不发送到 Hermes 服务端或第三方；
+- 直连回答的引用核验为**本地弱核验**（正则抽取 + 本地语料比对），弱于
+  服务端全链路证据闸门——回答卡片和设置页均如实标注；
+- 系统提示词强制"仅基于给定证据、不得给剂量建议/下诊断"，安全声明常驻；
+- standard 版完全不含直连入口，两版可并存对照。
+
 ## 6. 对抗性代码审查记录
 
 合入前对 v1 契约层 + Android 全部代码跑了 5 维度并行审查（后端安全回归、

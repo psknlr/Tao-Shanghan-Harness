@@ -5,6 +5,7 @@ import org.impfai.hermes.core.network.ApiClientFactory
 import org.impfai.hermes.core.settings.SettingsRepository
 import org.impfai.hermes.data.HermesRepository
 import org.impfai.hermes.engine.LocalClauseStore
+import org.impfai.hermes.engine.SkillStore
 
 /**
  * 手動依賴容器（單模塊 Phase 2/3 規模下比 Hilt 更少構建面；
@@ -13,6 +14,7 @@ import org.impfai.hermes.engine.LocalClauseStore
 class AppContainer(app: Application) {
     val settings = SettingsRepository(app)
     val localStore = LocalClauseStore(app)
+    val skillStore = SkillStore(app)
     val apiFactory = ApiClientFactory()
     val repo = HermesRepository(settings, localStore, apiFactory)
 }

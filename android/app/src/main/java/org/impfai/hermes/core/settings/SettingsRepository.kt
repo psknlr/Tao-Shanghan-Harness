@@ -26,6 +26,11 @@ data class AppSettings(
     val simplifiedDisplay: Boolean = true,
     val offlineOnly: Boolean = false,
     val favorites: Set<String> = emptySet(),
+    // —— VIP 直連大模型（BYOK；Key 僅存本機，見 DirectLlm 註釋）——
+    val llmProvider: String = "anthropic",
+    val llmApiKey: String = "",
+    val llmBaseUrl: String = "",
+    val llmModel: String = "",
 ) {
     companion object {
         const val DEFAULT_BASE_URL = "http://10.0.2.2:8765/"
@@ -48,6 +53,10 @@ class SettingsRepository(private val context: Context) {
         val SIMPLIFIED = booleanPreferencesKey("simplified_display")
         val OFFLINE_ONLY = booleanPreferencesKey("offline_only")
         val FAVORITES = stringSetPreferencesKey("favorite_clauses")
+        val LLM_PROVIDER = stringPreferencesKey("llm_provider")
+        val LLM_API_KEY = stringPreferencesKey("llm_api_key")
+        val LLM_BASE_URL = stringPreferencesKey("llm_base_url")
+        val LLM_MODEL = stringPreferencesKey("llm_model")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -58,6 +67,10 @@ class SettingsRepository(private val context: Context) {
             simplifiedDisplay = p[Keys.SIMPLIFIED] ?: true,
             offlineOnly = p[Keys.OFFLINE_ONLY] ?: false,
             favorites = p[Keys.FAVORITES] ?: emptySet(),
+            llmProvider = p[Keys.LLM_PROVIDER] ?: "anthropic",
+            llmApiKey = p[Keys.LLM_API_KEY] ?: "",
+            llmBaseUrl = p[Keys.LLM_BASE_URL] ?: "",
+            llmModel = p[Keys.LLM_MODEL] ?: "",
         )
     }
 
@@ -77,6 +90,15 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun setOfflineOnly(on: Boolean) {
         context.dataStore.edit { it[Keys.OFFLINE_ONLY] = on }
+    }
+
+    suspend fun setLlm(provider: String, apiKey: String, baseUrl: String, model: String) {
+        context.dataStore.edit { p ->
+            p[Keys.LLM_PROVIDER] = provider
+            p[Keys.LLM_API_KEY] = apiKey.trim()
+            p[Keys.LLM_BASE_URL] = baseUrl.trim()
+            p[Keys.LLM_MODEL] = model.trim()
+        }
     }
 
     suspend fun toggleFavorite(clauseId: String) {

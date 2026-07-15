@@ -9,9 +9,13 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
 import org.impfai.hermes.core.model.ClauseDetail
+import org.impfai.hermes.core.model.ClauseRelation
+import org.impfai.hermes.core.model.ClauseVariant
+import org.impfai.hermes.core.model.Commentary
 import org.impfai.hermes.core.model.Entities
 import org.impfai.hermes.core.model.FormulaBlock
 import org.impfai.hermes.core.model.HerbDose
+import org.impfai.hermes.core.model.InitialRule
 import org.impfai.hermes.core.model.SearchHit
 
 /**
@@ -72,6 +76,44 @@ class LocalClauseStore(private val context: Context) {
         @SerialName("release_level") val releaseLevel: String = "",
     )
 
+    // —— VIP 資產原始記錄（backend/data/shanghan 各規則庫的逐行結構）——
+    @Serializable
+    private data class CommentaryRule(
+        @SerialName("clause_id") val clauseId: String = "",
+        val commentator: String = "",
+        val book: String = "",
+        val chapter: String = "",
+        @SerialName("commentary_text") val commentaryText: String = "",
+    )
+
+    @Serializable
+    private data class VariantRule(
+        @SerialName("clause_id") val clauseId: String = "",
+        @SerialName("variant_book") val variantBook: String = "",
+        @SerialName("variant_text") val variantText: String = "",
+        val similarity: Double = 0.0,
+        @SerialName("notable_differences") val notableDifferences: List<String> = emptyList(),
+    )
+
+    @Serializable
+    private data class RelationRec(
+        @SerialName("source_clause_id") val sourceClauseId: String = "",
+        @SerialName("target_clause_id") val targetClauseId: String = "",
+        @SerialName("relation_type") val relationType: String = "",
+        val description: String = "",
+        val confidence: Double = 0.0,
+    )
+
+    @Serializable
+    private data class InitialRuleRec(
+        @SerialName("initial_rule_id") val ruleId: String = "",
+        @SerialName("clause_id") val clauseId: String = "",
+        @SerialName("rule_type") val ruleType: String = "",
+        @SerialName("interpretation_level") val interpretationLevel: String = "",
+        @SerialName("release_level") val releaseLevel: String = "",
+        val interpretation: String = "",
+    )
+
     private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
     private val mutex = Mutex()
 
@@ -81,6 +123,13 @@ class LocalClauseStore(private val context: Context) {
     private var byNumber: Map<Int, LocalClause> = emptyMap()
     private var rules: List<FormulaRule> = emptyList()
     private val index = Bm25Index()
+
+    // VIP 知識庫（standard 包內無這些資產 → 保持空集，界面自動降級）
+    @Volatile private var vipLoaded = false
+    private var commentariesByClause: Map<String, List<Commentary>> = emptyMap()
+    private var variantsByClause: Map<String, List<ClauseVariant>> = emptyMap()
+    private var relationsByClause: Map<String, List<ClauseRelation>> = emptyMap()
+    private var initialRulesByClause: Map<String, List<InitialRule>> = emptyMap()
 
     val layerLabels = mapOf(
         "A" to "原文直述", "B" to "版本異文", "C" to "注家解釋",
@@ -121,6 +170,67 @@ class LocalClauseStore(private val context: Context) {
 
     fun stats(): Pair<Int, Int> =
         clauses.size to clauses.count { it.textType == "original_clause" }
+
+    /** VIP 知識庫是否隨包內置（探測注家規則資產是否存在）。 */
+    fun vipContentAvailable(): Boolean = try {
+        context.assets.open("shanghan/commentary_rules.jsonl").close(); true
+    } catch (_: Exception) {
+        false
+    }
+
+    private inline fun <reified T> readJsonlAsset(path: String): List<T> = try {
+        context.assets.open(path).bufferedReader(Charsets.UTF_8).useLines { lines ->
+            lines.filter { it.isNotBlank() }
+                .map { json.decodeFromString<T>(it) }
+                .toList()
+        }
+    } catch (_: Exception) {
+        emptyList()      // standard 包無此資產
+    }
+
+    /** 惰性加載 VIP 知識庫（首次打開條文詳情時，約 5MB JSONL）。 */
+    private suspend fun ensureVipLoaded() {
+        if (vipLoaded) return
+        mutex.withLock {
+            if (vipLoaded) return
+            withContext(Dispatchers.IO) {
+                commentariesByClause = readJsonlAsset<CommentaryRule>(
+                    "shanghan/commentary_rules.jsonl")
+                    .groupBy({ it.clauseId }, {
+                        Commentary(commentator = it.commentator, book = it.book,
+                            chapter = it.chapter, text = it.commentaryText)
+                    })
+                variantsByClause = readJsonlAsset<VariantRule>(
+                    "shanghan/variant_rules.jsonl")
+                    .groupBy({ it.clauseId }, {
+                        ClauseVariant(book = it.variantBook, text = it.variantText,
+                            similarity = it.similarity,
+                            differences = it.notableDifferences)
+                    })
+                // 關係與 Python ClauseRAG 同構：雙端建索引，返回對端 id
+                val rels = readJsonlAsset<RelationRec>("shanghan/clause_relations.jsonl")
+                val relMap = HashMap<String, MutableList<ClauseRelation>>()
+                for (r in rels) {
+                    relMap.getOrPut(r.sourceClauseId) { ArrayList() }.add(
+                        ClauseRelation(r.relationType, r.targetClauseId,
+                            r.description, r.confidence))
+                    relMap.getOrPut(r.targetClauseId) { ArrayList() }.add(
+                        ClauseRelation(r.relationType, r.sourceClauseId,
+                            r.description, r.confidence))
+                }
+                relationsByClause = relMap
+                initialRulesByClause = readJsonlAsset<InitialRuleRec>(
+                    "shanghan/initial_rules.jsonl")
+                    .groupBy({ it.clauseId }, {
+                        InitialRule(id = it.ruleId, type = it.ruleType,
+                            strength = it.interpretationLevel,
+                            release = it.releaseLevel,
+                            interpretation = it.interpretation)
+                    })
+            }
+            vipLoaded = true
+        }
+    }
 
     fun byId(id: String): LocalClause? = byId[id]
 
@@ -186,10 +296,12 @@ class LocalClauseStore(private val context: Context) {
         matchSource = source,
     )
 
-    /** 離線條文詳情（無注家/異文——那些證據面需要服務端）。 */
+    /** 離線條文詳情。VIP 包內置全量規則庫時附帶異文/注家/關係/歸納規則
+     *（全息離線）；standard 包這些證據面需連接服務端。 */
     suspend fun clauseDetail(ref: String): ClauseDetail? {
         ensureLoaded()
         val c = ref.toIntOrNull()?.let { byNumber[it] } ?: byId[ref] ?: return null
+        ensureVipLoaded()
         return ClauseDetail(
             clauseId = c.clauseId,
             clauseNumber = c.clauseNumber,
@@ -211,6 +323,10 @@ class LocalClauseStore(private val context: Context) {
                     rawText = it.rawText,
                 )
             },
+            variants = variantsByClause[c.clauseId].orEmpty(),
+            commentaries = commentariesByClause[c.clauseId].orEmpty(),
+            relations = relationsByClause[c.clauseId].orEmpty().take(12),
+            initialRules = initialRulesByClause[c.clauseId].orEmpty(),
         )
     }
 }

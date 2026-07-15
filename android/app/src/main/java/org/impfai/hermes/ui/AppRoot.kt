@@ -30,6 +30,7 @@ import org.impfai.hermes.ui.home.HomeScreen
 import org.impfai.hermes.ui.match.MatchScreen
 import org.impfai.hermes.ui.search.SearchScreen
 import org.impfai.hermes.ui.settings.SettingsScreen
+import org.impfai.hermes.ui.skills.SkillsScreen
 
 data class TopDestination(
     val route: String,
@@ -99,6 +100,7 @@ fun AppRoot() {
                     onOpenSearch = { q, ch -> navController.openSearch(q, ch) },
                     onOpenClause = { navController.openClause(it) },
                     onOpenSettings = { navController.navigate("settings") },
+                    onOpenSkills = { navController.navigate("skills") },
                 )
             }
             composable(
@@ -126,6 +128,9 @@ fun AppRoot() {
                     onOpenClause = { navController.openClause(it) },
                     onBack = { navController.popBackStack() },
                 )
+            }
+            composable("skills") {
+                SkillsScreen(onBack = { navController.popBackStack() })
             }
         }
     }

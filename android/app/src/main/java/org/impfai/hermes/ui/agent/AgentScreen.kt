@@ -44,7 +44,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.doubleOrNull
+import androidx.compose.material3.FilterChip
 import org.impfai.hermes.AppContainer
+import org.impfai.hermes.BuildConfig
 import org.impfai.hermes.core.model.AgentData
 import org.impfai.hermes.data.RepoResult
 import org.impfai.hermes.ui.common.CitationBadge
@@ -64,6 +66,9 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
         val loading: Boolean = false,
         val simplified: Boolean = true,
         val role: String = "student",
+        /** "server"=Hermes 服務端；"direct"=VIP 直連大模型（BYOK） */
+        val source: String = "server",
+        val directReady: Boolean = false,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -73,7 +78,16 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
         viewModelScope.launch {
             val s = container.settings.current()
             _state.value = _state.value.copy(
-                simplified = s.simplifiedDisplay, role = s.requestedRole)
+                simplified = s.simplifiedDisplay, role = s.requestedRole,
+                directReady = s.llmApiKey.isNotBlank())
+        }
+    }
+
+    fun setSource(source: String) {
+        viewModelScope.launch {
+            val s = container.settings.current()
+            _state.value = _state.value.copy(
+                source = source, directReady = s.llmApiKey.isNotBlank())
         }
     }
 
@@ -83,9 +97,14 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
         _state.value = _state.value.copy(
             items = _state.value.items + ChatItem.User(q), loading = true)
         viewModelScope.launch {
-            val item = when (val r = container.repo.agent(q)) {
-                is RepoResult.Data -> ChatItem.Bot(r.value)
-                is RepoResult.Error -> ChatItem.Failure("${r.code}: ${r.message}")
+            val result = if (_state.value.source == "direct") {
+                container.repo.directAgent(q)
+            } else {
+                container.repo.agent(q)
+            }
+            val item = when (result) {
+                is RepoResult.Data -> ChatItem.Bot(result.value)
+                is RepoResult.Error -> ChatItem.Failure("${result.code}: ${result.message}")
             }
             _state.value = _state.value.copy(
                 items = _state.value.items + item, loading = false)
@@ -115,13 +134,39 @@ fun AgentScreen(onOpenClause: (String) -> Unit) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
-                Text(
-                    "围绕《伤寒论》条文提问；回答由服务端智能体生成，" +
-                        "引用经 CitationGuard 核验（当前角色请求：${state.role}）。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 12.dp),
-                )
+                Column(Modifier.padding(top = 12.dp)) {
+                    if (BuildConfig.VIP) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FilterChip(
+                                selected = state.source == "server",
+                                onClick = { vm.setSource("server") },
+                                label = { Text("Hermes 服务端") },
+                            )
+                            FilterChip(
+                                selected = state.source == "direct",
+                                onClick = { vm.setSource("direct") },
+                                label = { Text("直连大模型") },
+                            )
+                        }
+                        if (state.source == "direct" && !state.directReady) {
+                            Text(
+                                "尚未配置模型 API Key —— 请到「我的 → 直连大模型」设置",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                    Text(
+                        if (state.source == "direct")
+                            "直连模式：本地 BM25 先取证据条文 → 大模型作答 → " +
+                                "本地 CitationGuard 核验引用（密钥仅存本机）。"
+                        else
+                            "围绕《伤寒论》条文提问；回答由服务端智能体生成，" +
+                                "引用经 CitationGuard 核验（当前角色请求：${state.role}）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             items(state.items.size) { i ->
                 when (val item = state.items[i]) {

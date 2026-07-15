@@ -14,8 +14,24 @@ android {
         applicationId = "org.impfai.hermes"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.1.0"
+    }
+
+    // standard：知識閱讀 + 服務端接入
+    // vip     ：全量傷寒論知識庫/Skill 內置 + BYOK 直連大模型（密鑰僅存本機）
+    flavorDimensions += "edition"
+    productFlavors {
+        create("standard") {
+            dimension = "edition"
+            buildConfigField("boolean", "VIP", "false")
+        }
+        create("vip") {
+            dimension = "edition"
+            applicationIdSuffix = ".vip"
+            versionNameSuffix = "-vip"
+            buildConfigField("boolean", "VIP", "true")
+        }
     }
 
     buildTypes {
@@ -57,6 +73,30 @@ val copyCorpusAssets = tasks.register<Copy>("copyCorpusAssets") {
 }
 android.sourceSets.getByName("main").assets.srcDir(corpusAssets)
 tasks.named("preBuild") { dependsOn(copyCorpusAssets) }
+
+// VIP 資產包：全量規則庫（注家/異文/關係/初始/六經/鑒別/誤治/治法）
+// + 139 個 Skill + 語料 manifest —— 僅 vip flavor 打入 APK
+val vipAssets = layout.buildDirectory.dir("generated/vipAssets")
+val copyVipAssets = tasks.register<Copy>("copyVipAssets") {
+    val base = rootProject.file("../backend/data/shanghan")
+    into(vipAssets)
+    into("shanghan") {
+        from(base.resolve("relations/clause_relations.jsonl"))
+        from(base.resolve("rules_commentary/commentary_rules.jsonl"))
+        from(base.resolve("rules_variant/variant_rules.jsonl"))
+        from(base.resolve("rules_initial/initial_rules.jsonl"))
+        from(base.resolve("rules_six_channel/six_channel_rules.jsonl"))
+        from(base.resolve("rules_differential/differential_rules.jsonl"))
+        from(base.resolve("rules_mistreatment/mistreatment_rules.jsonl"))
+        from(base.resolve("rules_therapy/therapy_rules.jsonl"))
+        from(base.resolve("manifest/corpus_manifest.json"))
+    }
+    into("skills") {
+        from(rootProject.file("../backend/data/skills/shanghanlun"))
+    }
+}
+android.sourceSets.getByName("vip").assets.srcDir(vipAssets)
+tasks.named("preBuild") { dependsOn(copyVipAssets) }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")

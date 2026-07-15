@@ -1,7 +1,9 @@
 package org.impfai.hermes.data
 
+import org.impfai.hermes.core.llm.DirectLlm
 import org.impfai.hermes.core.model.AgentData
 import org.impfai.hermes.core.model.AgentRequest
+import org.impfai.hermes.core.model.CitationReport
 import org.impfai.hermes.core.model.ClauseDetail
 import org.impfai.hermes.core.model.EnvelopeMeta
 import org.impfai.hermes.core.model.HealthData
@@ -135,7 +137,10 @@ class HermesRepository(
             ?: return serverError ?: RepoResult.Error("NOT_FOUND", "未找到条文 $ref")
         return RepoResult.Data(
             local, ResultOrigin.LOCAL_CORPUS,
-            notice = "离线条文：异文/注家/历代引用等证据面需连接服务端",
+            notice = if (localStore.vipContentAvailable())
+                "离线条文（VIP 全量知识库：注家/异文/关系已内置；历代引用溯源需服务端）"
+            else
+                "离线条文：异文/注家/历代引用等证据面需连接服务端",
         )
     }
 
@@ -177,6 +182,85 @@ class HermesRepository(
                 is ApiResult.Offline -> RepoResult.Error("OFFLINE", "无法连接服务端：${r.message}")
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // VIP 直連大模型：本地 BM25 取證 → 模型作答 → 本地 CitationGuard 核驗
+    // ------------------------------------------------------------------
+    private val reClauseId = Regex("SHL_SONGBEN_(?:AUX_)?\\d{4}")
+
+    private val directSystemPrompt = """
+        你是《伤寒论》文献研究助手（研发者：医哲未来人工智能研究院 IMPF-AI）。
+        规则：
+        1. 只能依据下方【证据条文】作答；引用条文时必须使用其方括号内的
+           条文 ID（如 [SHL_SONGBEN_0012]），不得编造 ID 或凭记忆引用。
+        2. 证据不足以回答时，明确说明"现有证据不足"，不要臆测。
+        3. 输出结构：主要结论 → 证据条文（逐条 ID+要点）→ 局限与不确定性。
+        4. 这是古籍文献研究，不是诊疗：不得给出用药剂量建议、不得下诊断，
+           涉及现实病情时提醒用户咨询执业中医师。
+        5. 使用与提问相同的语言（简体/繁体）回答，保持简洁。
+    """.trimIndent()
+
+    /**
+     * VIP 直連模式。密鑰僅存本機、只發送至用戶配置的模型服務商；
+     * 引用經本地核驗（弱於服務端全鏈路閘門，UI 標注「本地核驗」）。
+     */
+    suspend fun directAgent(question: String): RepoResult<AgentData> {
+        val s = settingsRepo.current()
+        if (s.llmApiKey.isBlank()) {
+            return RepoResult.Error("NO_KEY",
+                "未配置模型 API Key，请在“我的 → 直连大模型”中设置")
+        }
+        localStore.ensureLoaded()
+        val hits = localStore.search(question, topK = 6)
+        val evidenceIds = hits.map { it.clauseId }.toSet()
+        val evidenceBlock = if (hits.isEmpty()) "（本地检索无命中）"
+        else hits.joinToString("\n") { "[${it.clauseId}] ${it.text}" }
+        val userPrompt = "【证据条文】\n$evidenceBlock\n\n【问题】\n$question"
+
+        val answer = DirectLlm.complete(
+            provider = s.llmProvider, apiKey = s.llmApiKey,
+            baseUrl = s.llmBaseUrl, model = s.llmModel,
+            system = directSystemPrompt, user = userPrompt,
+        ).getOrElse { e ->
+            return RepoResult.Error("LLM_ERROR", e.message ?: "模型调用失败")
+        }
+
+        // 本地 CitationGuard：引用必須指向本輪提供的證據；引用了庫內
+        // 其他條文記 outside_evidence（△），庫外 ID 記 unsupported（×）
+        val cited = reClauseId.findAll(answer).map { it.value }.distinct().toList()
+        val verified = ArrayList<String>()
+        val outside = ArrayList<String>()
+        val unsupported = ArrayList<String>()
+        for (id in cited) {
+            when {
+                id in evidenceIds -> verified.add(id)
+                localStore.byId(id) != null -> outside.add(id)
+                else -> unsupported.add(id)
+            }
+        }
+        val report = CitationReport(
+            cited = cited, verified = verified, unsupported = unsupported,
+            outsideEvidence = outside,
+            hasAnyCitation = cited.isNotEmpty(),
+            ok = cited.isNotEmpty() && unsupported.isEmpty() && outside.isEmpty(),
+        )
+        val model = s.llmModel.ifBlank { DirectLlm.defaultModel(s.llmProvider) }
+        return RepoResult.Data(
+            AgentData(
+                question = question,
+                answer = answer,
+                backend = "直连·$model",
+                toolsUsed = listOf("local_bm25_rag", "local_citation_guard"),
+                evidenceClauseIds = hits.map { it.clauseId },
+                citationReport = report,
+                safetyNotice = "直连模式：回答由第三方大模型生成，引用仅经本地核验" +
+                    "（弱于服务端全链路证据闸门）；内容供文献学习参考，" +
+                    "不构成诊断或治疗建议。",
+            ),
+            ResultOrigin.SERVER,
+            notice = null,
+        )
     }
 
     /** 首頁/設置頁狀態卡：health + whoami + content manifest。 */

@@ -44,6 +44,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.impfai.hermes.AppContainer
 import org.impfai.hermes.BuildConfig
+import org.impfai.hermes.core.llm.DirectLlm
 import org.impfai.hermes.core.settings.AppSettings
 import org.impfai.hermes.data.ServerStatus
 import org.impfai.hermes.ui.common.NoticeBar
@@ -62,6 +63,12 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         val testResult: String = "",
         val testOk: Boolean = false,
         val saved: Boolean = false,
+        // —— VIP 直連大模型 ——
+        val llmProvider: String = "anthropic",
+        val llmApiKey: String = "",
+        val llmBaseUrl: String = "",
+        val llmModel: String = "",
+        val llmSaved: Boolean = false,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -74,7 +81,31 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
                 loaded = true, baseUrl = s.baseUrl, token = s.apiToken,
                 role = s.requestedRole, simplified = s.simplifiedDisplay,
                 offlineOnly = s.offlineOnly,
+                llmProvider = s.llmProvider, llmApiKey = s.llmApiKey,
+                llmBaseUrl = s.llmBaseUrl, llmModel = s.llmModel,
             )
+        }
+    }
+
+    fun editLlm(
+        provider: String? = null, apiKey: String? = null,
+        baseUrl: String? = null, model: String? = null,
+    ) {
+        _state.value = _state.value.copy(
+            llmProvider = provider ?: _state.value.llmProvider,
+            llmApiKey = apiKey ?: _state.value.llmApiKey,
+            llmBaseUrl = baseUrl ?: _state.value.llmBaseUrl,
+            llmModel = model ?: _state.value.llmModel,
+            llmSaved = false,
+        )
+    }
+
+    fun saveLlm() {
+        viewModelScope.launch {
+            val st = _state.value
+            container.settings.setLlm(st.llmProvider, st.llmApiKey,
+                st.llmBaseUrl, st.llmModel)
+            _state.value = _state.value.copy(llmSaved = true)
         }
     }
 
@@ -141,6 +172,7 @@ fun SettingsScreen() {
     val vm: SettingsViewModel = viewModel { SettingsViewModel(container) }
     val state by vm.state.collectAsStateWithLifecycle()
     var showToken by remember { mutableStateOf(false) }
+    var showLlmKey by remember { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -214,6 +246,71 @@ fun SettingsScreen() {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        if (BuildConfig.VIP) {
+            SectionCard("直连大模型（VIP · BYOK）") {
+                Text("自带 API Key 直连模型服务商；Key 仅保存在本机" +
+                    "（不随云备份、不发送到 Hermes 服务端）。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                    DirectLlm.PROVIDERS.forEach { p ->
+                        FilterChip(
+                            selected = state.llmProvider == p,
+                            onClick = { vm.editLlm(provider = p) },
+                            label = { Text(DirectLlm.PROVIDER_LABELS[p] ?: p) },
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = state.llmApiKey,
+                    onValueChange = { vm.editLlm(apiKey = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("API Key") },
+                    singleLine = true,
+                    visualTransformation = if (showLlmKey) VisualTransformation.None
+                    else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showLlmKey = !showLlmKey }) {
+                            Icon(
+                                if (showLlmKey) Icons.Filled.VisibilityOff
+                                else Icons.Filled.Visibility,
+                                contentDescription = "显示/隐藏",
+                            )
+                        }
+                    },
+                )
+                OutlinedTextField(
+                    value = state.llmBaseUrl,
+                    onValueChange = { vm.editLlm(baseUrl = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Base URL（留空用官方端点）") },
+                    placeholder = {
+                        Text(DirectLlm.defaultBaseUrl(state.llmProvider))
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                )
+                OutlinedTextField(
+                    value = state.llmModel,
+                    onValueChange = { vm.editLlm(model = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("模型名（留空用默认）") },
+                    placeholder = { Text(DirectLlm.defaultModel(state.llmProvider)) },
+                    singleLine = true,
+                )
+                Button(onClick = vm::saveLlm) {
+                    Text(if (state.llmSaved) "已保存" else "保存模型配置")
+                }
+                Text(
+                    "直连模式流程：本地 BM25 检索证据条文 → 大模型基于证据作答 → " +
+                        "本地 CitationGuard 核验引用。核验强度弱于服务端全链路闸门，" +
+                        "回答卡片会如实标注。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         SectionCard("显示") {
