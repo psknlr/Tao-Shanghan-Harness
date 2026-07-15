@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">伤寒Hermes</string>
+    <string name="developer_name">医哲未来人工智能研究院（IMPF-AI）</string>
+    <string name="tab_home">首页</string>
+    <string name="tab_search">检索</string>
+    <string name="tab_bianzheng">辨证</string>
+    <string name="tab_agent">智能体</string>
+    <string name="tab_settings">我的</string>
+    <string name="disclaimer">本应用是中医古籍学习与研究辅助工具，不构成诊断或治疗建议；是否属于某种证型、如何用药，请务必由执业中医师当面判断。</string>
+</resources>

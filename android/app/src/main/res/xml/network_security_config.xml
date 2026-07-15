@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Release：禁止明文流量（生產必須 HTTPS）。Debug 構建以
+     src/debug/res/xml/network_security_config.xml 覆蓋，允許連接
+     局域網/模擬器上的開發服務端。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+</network-security-config>
