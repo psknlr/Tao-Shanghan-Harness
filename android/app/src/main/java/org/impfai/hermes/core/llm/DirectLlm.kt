@@ -31,20 +31,23 @@ object DirectLlm {
     const val PROVIDER_ANTHROPIC = "anthropic"
     const val PROVIDER_OPENAI = "openai"   // OpenAI 及一切兼容端點（中轉/MiniMax 等）
 
-    val PROVIDERS = listOf(PROVIDER_ANTHROPIC, PROVIDER_OPENAI)
+    val PROVIDERS = listOf(PROVIDER_OPENAI, PROVIDER_ANTHROPIC)
     val PROVIDER_LABELS = mapOf(
         PROVIDER_ANTHROPIC to "Anthropic",
-        PROVIDER_OPENAI to "OpenAI 兼容",
+        PROVIDER_OPENAI to "OpenAI 兼容（Poe）",
     )
 
+    // OpenAI 兼容端點默認指向 Poe（用戶要求）：一個 Poe Key 可調用
+    // Claude/GPT/Gemini 等全系模型；填其他兼容端點（OpenAI 官方/中轉）
+    // 只需改 Base URL。
     fun defaultBaseUrl(provider: String): String = when (provider) {
         PROVIDER_ANTHROPIC -> "https://api.anthropic.com"
-        else -> "https://api.openai.com"
+        else -> "https://api.poe.com"
     }
 
     fun defaultModel(provider: String): String = when (provider) {
         PROVIDER_ANTHROPIC -> "claude-sonnet-5"
-        else -> "gpt-4o"
+        else -> "Claude-Sonnet-4.6"
     }
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -74,6 +77,8 @@ object DirectLlm {
                 PROVIDER_ANTHROPIC -> anthropic(base, apiKey, mdl, system, user, maxTokens)
                 else -> openAi(base, apiKey, mdl, system, user, maxTokens)
             }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
         } catch (e: IOException) {
             Result.failure(IOException("网络请求失败：${e.message}", e))
         } catch (e: Exception) {

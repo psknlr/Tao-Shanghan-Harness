@@ -109,8 +109,12 @@ fun AppRoot() {
                     navArgument("query") { defaultValue = "" },
                     navArgument("channel") { defaultValue = "" },
                 ),
-            ) {
-                SearchScreen(onOpenClause = { navController.openClause(it) })
+            ) { entry ->
+                SearchScreen(
+                    onOpenClause = { navController.openClause(it) },
+                    initialQuery = entry.arguments?.getString("query") ?: "",
+                    initialChannel = entry.arguments?.getString("channel") ?: "",
+                )
             }
             composable("match") {
                 MatchScreen(onOpenClause = { navController.openClause(it) })

@@ -49,7 +49,9 @@ class ApiClientFactory {
         synchronized(this) {
             cachedApi?.let { if (cachedKey == key) return it }
             val client = OkHttpClient.Builder()
-                .connectTimeout(10, TimeUnit.SECONDS)
+                // 連接超時要短：服務端未配置時本地回退等它失敗，10s 會被
+                // 感知為「檢索沒反應」（v1.2 端側優先修正）
+                .connectTimeout(4, TimeUnit.SECONDS)
                 .readTimeout(120, TimeUnit.SECONDS)   // agent/council 可能較慢
                 .writeTimeout(30, TimeUnit.SECONDS)
                 .apply {
@@ -102,6 +104,10 @@ class ApiClientFactory {
 suspend fun <T> safeCall(block: suspend () -> Response<Envelope<T>>): ApiResult<T> {
     val response = try {
         block()
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        // 結構化並發：取消必須向上拋，吞掉會讓被取消的舊請求繼續寫 UI 狀態
+        //（v1.1 檢索亂序/狀態錯亂的根因之一）
+        throw e
     } catch (e: IOException) {
         return ApiResult.Offline(e.message ?: "網絡不可達")
     } catch (e: IllegalArgumentException) {

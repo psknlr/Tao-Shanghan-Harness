@@ -66,6 +66,8 @@ class LocalClauseStore(private val context: Context) {
         @SerialName("core_pattern") val corePattern: String = "",
         @SerialName("core_symptoms") val coreSymptoms: List<String> = emptyList(),
         @SerialName("core_pulse") val corePulse: List<String> = emptyList(),
+        @SerialName("associated_symptoms") val associatedSymptoms: List<String> = emptyList(),
+        @SerialName("associated_pulse") val associatedPulse: List<String> = emptyList(),
         val contraindications: List<String> = emptyList(),
         val composition: List<HerbDose> = emptyList(),
         @SerialName("administration_notes") val administrationNotes: List<String> = emptyList(),
@@ -141,16 +143,29 @@ class LocalClauseStore(private val context: Context) {
         mutex.withLock {
             if (loaded) return
             withContext(Dispatchers.IO) {
+                // 逐行容錯：單條損壞記錄跳過，不允許整庫加載失敗導致閃退
                 clauses = context.assets.open("shanghan/clauses.jsonl")
                     .bufferedReader(Charsets.UTF_8).useLines { lines ->
                         lines.filter { it.isNotBlank() }
-                            .map { json.decodeFromString<LocalClause>(it) }
+                            .mapNotNull {
+                                try {
+                                    json.decodeFromString<LocalClause>(it)
+                                } catch (_: Exception) {
+                                    null
+                                }
+                            }
                             .toList()
                     }
                 rules = context.assets.open("shanghan/formula_pattern_rules.jsonl")
                     .bufferedReader(Charsets.UTF_8).useLines { lines ->
                         lines.filter { it.isNotBlank() }
-                            .map { json.decodeFromString<FormulaRule>(it) }
+                            .mapNotNull {
+                                try {
+                                    json.decodeFromString<FormulaRule>(it)
+                                } catch (_: Exception) {
+                                    null
+                                }
+                            }
                             .toList()
                     }
                 byId = clauses.associateBy { it.clauseId }
@@ -181,7 +196,13 @@ class LocalClauseStore(private val context: Context) {
     private inline fun <reified T> readJsonlAsset(path: String): List<T> = try {
         context.assets.open(path).bufferedReader(Charsets.UTF_8).useLines { lines ->
             lines.filter { it.isNotBlank() }
-                .map { json.decodeFromString<T>(it) }
+                .mapNotNull {
+                    try {
+                        json.decodeFromString<T>(it)
+                    } catch (_: Exception) {
+                        null    // 單行損壞跳過
+                    }
+                }
                 .toList()
         }
     } catch (_: Exception) {

@@ -15,6 +15,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
@@ -40,6 +42,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -58,7 +61,10 @@ import org.impfai.hermes.ui.common.rememberContainer
 
 class HomeViewModel(private val container: AppContainer) : ViewModel() {
     data class UiState(
-        val loading: Boolean = true,
+        // 初始必須為 false：refresh() 的在途去重守衛以 loading 為判據，
+        // 初始 true 會讓 init 的首次 refresh 被自己擋住——首頁永遠
+        //「加載中/0 條記錄」（v1.1 實測 bug，SmokeUiTest 抓獲）
+        val loading: Boolean = false,
         val status: ServerStatus? = null,
         val localTotal: Int = 0,
         val localCanonical: Int = 0,
@@ -182,11 +188,14 @@ fun HomeScreen(
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     val st = state.status
                     when {
-                        state.loading -> Text("检查服务端状态…",
+                        state.loading -> Text("加载中…",
                             style = MaterialTheme.typography.bodyMedium)
-                        st == null -> Text("离线模式（仅本地语料）",
+                        st == null -> Text(
+                            if (state.vipContent) "纯端侧模式 · 全量知识库已内置"
+                            else "离线模式（仅本地语料）",
                             style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold)
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF2E7D32))
                         st.reachable && st.ready -> {
                             Text("服务端在线 · ${st.backend}",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -225,7 +234,8 @@ fun HomeScreen(
             }
         }
 
-        // 快速檢索
+        // 快速檢索（鍵盤搜索鍵與圖標按鈕同效——v1.1 只有圖標可點，
+        // 用戶按輸入法「搜索」無反應被感知為「檢索沒實現」）
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
@@ -237,6 +247,10 @@ fun HomeScreen(
                 }
             },
             singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = {
+                if (query.isNotBlank()) onOpenSearch(query, "")
+            }),
         )
 
         // 六經入口

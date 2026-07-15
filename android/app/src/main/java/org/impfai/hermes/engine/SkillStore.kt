@@ -25,7 +25,7 @@ class SkillStore(private val context: Context) {
 
     fun available(): Boolean =
         try {
-            (context.assets.list("skills") ?: emptyArray()).isNotEmpty()
+            context.assets.open("skills_index.txt").close(); true
         } catch (_: Exception) {
             false
         }
@@ -37,7 +37,25 @@ class SkillStore(private val context: Context) {
             false
         }
 
+    /** 首選構建期索引（AssetManager.list 對子目錄的行為跨環境不一致——
+     *  Robolectric 冒煙測試實測只返回文件）；索引缺失時回退目錄遍歷。 */
     suspend fun list(): List<SkillEntry> = withContext(Dispatchers.IO) {
+        val indexed = try {
+            context.assets.open("skills_index.txt")
+                .bufferedReader(Charsets.UTF_8).use { it.readLines() }
+                .filter { it.isNotBlank() }
+        } catch (_: Exception) {
+            emptyList()
+        }
+        if (indexed.isNotEmpty()) {
+            return@withContext indexed.map { rel ->
+                val parts = rel.split('/')
+                val category = parts.first().removePrefix("hermes.shanghan.")
+                val name = if (parts.size > 1) parts.last() else category
+                SkillEntry("skills/$rel", category, name)
+            }
+        }
+        // 回退：目錄遍歷
         val out = ArrayList<SkillEntry>()
         val top = context.assets.list("skills") ?: return@withContext out
         for (entry in top.sorted()) {

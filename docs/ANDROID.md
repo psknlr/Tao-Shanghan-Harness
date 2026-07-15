@@ -204,6 +204,34 @@ cd android
 - 系统提示词强制"仅基于给定证据、不得给剂量建议/下诊断"，安全声明常驻；
 - standard 版完全不含直连入口，两版可并存对照。
 
+## 5.6 v1.2：真机问题 debug + VIP 纯端侧化 + Robolectric 冒烟防线
+
+用户真机反馈（检索无响应、疑似闪退、首页数据为 0）经 Robolectric
+（JVM 真实 Compose + 真实 APK 资产）复现定位，全部修复：
+
+| 根因 | 修复 |
+|---|---|
+| **首页加载死锁**：初始 `loading=true` 撞上 v1.1 加的在途去重守卫，`refresh()` 永远被自己挡住 → 首页永远"加载中/本地语料 0 条" | 初始 `loading=false`（SmokeUiTest 抓获） |
+| **键盘搜索键未接线**：输入后按输入法"搜索"无反应，只有点小图标才检索 | 全部输入框接 `ImeAction.Search/Send` + KeyboardActions |
+| **首页→检索参数过期**：launchSingleTop 复用 ViewModel，init 时 SavedStateHandle 是旧值 | UI 层将 NavBackStackEntry 实参喂给 `applyExternalArgs` |
+| **协程取消被吞**：`safeCall/withApi/DirectLlm` 的 catch(Exception) 捕获 CancellationException，被取消的旧请求继续写 UI 状态 | 三处 rethrow |
+| **默认连 10.0.2.2 + 10s 连接超时**：真机上每次检索先等 10 秒失败才回退本地，感知为"检索没实现" | VIP 默认 `offlineOnly=true`（纯端侧，不发任何远端请求）；连接超时降至 4s |
+| 检索列表 key 重复可崩 | itemsIndexed 带序号 key |
+| 语料单行损坏会拖垮整库加载 | 逐行容错跳过 |
+
+**VIP v1.2 纯端侧形态**（用户要求）：默认不连接任何 Hermes 服务端；
+方证匹配改为端侧确定性计算（`doctor.py` FormulaMatcher 精确移植：
+核心证 ×2.0 / 兼证 ×1.0 / 近似 Jaccard≥0.6 +1.5 / 提纲证 +1.0 /
+反证 −2.5 / 证据厚度 +min(0.3,0.05n)）；直连大模型 OpenAI 兼容端点
+默认 **Poe（https://api.poe.com）+ Claude-Sonnet-4.6**；服务端接入降级为
+可选项。Skill 索引改为构建期生成清单（`AssetManager.list` 对子目录行为
+跨环境不一致，且下划线开头文件会被 AAPT 资产打包忽略）。
+
+**测试防线**：Robolectric 冒烟（启动/五页导航/离线检索开条文/方剂库/
+Skill 库）+ 端侧引擎金标准（681 条加载、检索首位与服务端一致
+[SHL_SONGBEN_0136]、简体输入等价、条文号直查、麻黄汤匹配金标准、
+VIP 全息断言、139 Skill 断言）——两 flavor 各 21 项全绿。
+
 ## 6. 对抗性代码审查记录
 
 合入前对 v1 契约层 + Android 全部代码跑了 5 维度并行审查（后端安全回归、

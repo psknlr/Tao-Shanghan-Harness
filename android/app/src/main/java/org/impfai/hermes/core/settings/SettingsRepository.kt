@@ -11,6 +11,7 @@ import androidx.datastore.preferences.preferencesDataStore
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import org.impfai.hermes.BuildConfig
 
 /**
  * 客戶端設置（DataStore）。
@@ -24,10 +25,11 @@ data class AppSettings(
     val apiToken: String = "",
     val requestedRole: String = "student",
     val simplifiedDisplay: Boolean = true,
-    val offlineOnly: Boolean = false,
+    // VIP 默認純端側：全量數據隨包，未顯式配置服務端前不發任何遠端請求
+    val offlineOnly: Boolean = BuildConfig.VIP,
     val favorites: Set<String> = emptySet(),
     // —— VIP 直連大模型（BYOK；Key 僅存本機，見 DirectLlm 註釋）——
-    val llmProvider: String = "anthropic",
+    val llmProvider: String = "openai",     // 默認 OpenAI 兼容（Poe 端點）
     val llmApiKey: String = "",
     val llmBaseUrl: String = "",
     val llmModel: String = "",
@@ -65,9 +67,9 @@ class SettingsRepository(private val context: Context) {
             apiToken = p[Keys.API_TOKEN] ?: "",
             requestedRole = p[Keys.ROLE] ?: "student",
             simplifiedDisplay = p[Keys.SIMPLIFIED] ?: true,
-            offlineOnly = p[Keys.OFFLINE_ONLY] ?: false,
+            offlineOnly = p[Keys.OFFLINE_ONLY] ?: BuildConfig.VIP,
             favorites = p[Keys.FAVORITES] ?: emptySet(),
-            llmProvider = p[Keys.LLM_PROVIDER] ?: "anthropic",
+            llmProvider = p[Keys.LLM_PROVIDER] ?: "openai",
             llmApiKey = p[Keys.LLM_API_KEY] ?: "",
             llmBaseUrl = p[Keys.LLM_BASE_URL] ?: "",
             llmModel = p[Keys.LLM_MODEL] ?: "",

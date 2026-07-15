@@ -184,7 +184,19 @@ fun SettingsScreen() {
         Text("我的", style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold)
 
-        SectionCard("服务端接入（API 设置）") {
+        SectionCard(
+            if (BuildConfig.VIP) "Hermes 服务端（可选：VIP 默认纯端侧运行）"
+            else "服务端接入（API 设置）"
+        ) {
+            if (BuildConfig.VIP) {
+                Text(
+                    "VIP 版全量知识库已内置，默认不连接任何服务器；" +
+                        "如需运行中心/深度研究/历代引用溯源等平台能力，" +
+                        "可在此配置自建 Hermes 服务端并关闭下方“仅离线模式”。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             OutlinedTextField(
                 value = state.baseUrl,
                 onValueChange = { vm.edit(baseUrl = it) },

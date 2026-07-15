@@ -21,6 +21,7 @@ import org.impfai.hermes.core.network.HermesApi
 import org.impfai.hermes.core.network.safeCall
 import org.impfai.hermes.core.settings.SettingsRepository
 import org.impfai.hermes.engine.LocalClauseStore
+import org.impfai.hermes.engine.LocalFormulaMatcher
 
 /** UI 層統一結果：數據 + 來源標記 + 可選提示。 */
 sealed interface RepoResult<out T> {
@@ -77,6 +78,8 @@ class HermesRepository(
     ): RepoResult<T> = try {
         val (api, role) = api()
         block(api, role)
+    } catch (e: kotlinx.coroutines.CancellationException) {
+        throw e
     } catch (e: IllegalArgumentException) {
         RepoResult.Error("INVALID_BASE_URL",
             "服务端地址无效，请在“我的”页检查：${e.message ?: ""}")
@@ -149,23 +152,29 @@ class HermesRepository(
         pulse: List<String>,
         sixChannel: String?,
     ): RepoResult<MatchData> {
-        if (offlineOnly()) {
-            return RepoResult.Error(
-                "OFFLINE", "方证匹配需要连接 Hermes 服务端（离线模式已开启）")
-        }
-        return withApi { api, role ->
-            when (val r = safeCall {
-                api.match(MatchRequest(symptoms = symptoms, pulse = pulse,
-                    sixChannel = sixChannel?.takeIf { it.isNotBlank() }, role = role))
-            }) {
-                is ApiResult.Success ->
-                    r.data.errorMessage?.let {
-                        RepoResult.Error("SERVER_MESSAGE", it)
-                    } ?: RepoResult.Data(r.data, ResultOrigin.SERVER, r.meta)
-                is ApiResult.Failure -> RepoResult.Error(r.code, r.message, r.retryable)
-                is ApiResult.Offline -> RepoResult.Error("OFFLINE", "无法连接服务端：${r.message}")
+        if (!offlineOnly()) {
+            val remote = withApi<MatchData> { api, role ->
+                when (val r = safeCall {
+                    api.match(MatchRequest(symptoms = symptoms, pulse = pulse,
+                        sixChannel = sixChannel?.takeIf { it.isNotBlank() }, role = role))
+                }) {
+                    is ApiResult.Success ->
+                        r.data.errorMessage?.let {
+                            RepoResult.Error("SERVER_MESSAGE", it)
+                        } ?: RepoResult.Data(r.data, ResultOrigin.SERVER, r.meta)
+                    is ApiResult.Failure -> RepoResult.Error(r.code, r.message, r.retryable)
+                    is ApiResult.Offline -> RepoResult.Error("OFFLINE", r.message)
+                }
             }
+            // 策略類錯誤（403 等）不回退：降級繞過授權等於客戶端自行提權
+            if (!(remote is RepoResult.Error && remote.code == "OFFLINE")) return remote
         }
+        // 端側確定性匹配（doctor.py 移植；VIP 純端側模式的默認路徑）
+        val local = LocalFormulaMatcher.match(localStore, symptoms, pulse, sixChannel)
+        return RepoResult.Data(
+            local, ResultOrigin.LOCAL_CORPUS,
+            notice = "端侧匹配：本地规则库确定性计算（未连接服务端）",
+        )
     }
 
     suspend fun agent(question: String): RepoResult<AgentData> {

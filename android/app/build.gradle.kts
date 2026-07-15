@@ -14,8 +14,8 @@ android {
         applicationId = "org.impfai.hermes"
         minSdk = 26
         targetSdk = 35
-        versionCode = 2
-        versionName = "1.1.0"
+        versionCode = 3
+        versionName = "1.2.0"
     }
 
     // standard：知識閱讀 + 服務端接入
@@ -61,6 +61,12 @@ android {
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
+    testOptions {
+        unitTests {
+            // Robolectric：JVM 上帶真實資產/資源運行 Compose UI 冒煙測試
+            isIncludeAndroidResources = true
+        }
+    }
 }
 
 // 離線語料唯一真源是 backend/data/shanghan —— 構建期複製進 assets，
@@ -94,6 +100,20 @@ val copyVipAssets = tasks.register<Copy>("copyVipAssets") {
     into("skills") {
         from(rootProject.file("../backend/data/skills/shanghanlun"))
     }
+    // Skill 索引文件：AssetManager.list() 對子目錄的行為因環境而異
+    //（Robolectric 只返回文件），改為構建期生成清單，運行時直讀。
+    // 文件名不得以下劃線開頭（AAPT 資產打包默認忽略 _* 模式）。
+    doLast {
+        val root = rootProject.file("../backend/data/skills/shanghanlun")
+        val entries = root.walkTopDown()
+            .filter { it.isFile && it.name == "SKILL.md" }
+            .map { it.parentFile.relativeTo(root).invariantSeparatorsPath }
+            .sorted()
+            .toList()
+        val index = vipAssets.get().asFile.resolve("skills_index.txt")
+        index.parentFile.mkdirs()
+        index.writeText(entries.joinToString("\n"))
+    }
 }
 android.sourceSets.getByName("vip").assets.srcDir(vipAssets)
 tasks.named("preBuild") { dependsOn(copyVipAssets) }
@@ -125,4 +145,9 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation(composeBom)
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
 }

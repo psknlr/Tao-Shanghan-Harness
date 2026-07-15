@@ -14,6 +14,8 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.Card
@@ -34,6 +36,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -66,8 +69,9 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
         val loading: Boolean = false,
         val simplified: Boolean = true,
         val role: String = "student",
-        /** "server"=Hermes 服務端；"direct"=VIP 直連大模型（BYOK） */
-        val source: String = "server",
+        /** "server"=Hermes 服務端；"direct"=VIP 直連大模型（BYOK）。
+         *  VIP 默認直連——純端側版本不依賴 Hermes 服務端。 */
+        val source: String = if (BuildConfig.VIP) "direct" else "server",
         val directReady: Boolean = false,
     )
 
@@ -219,6 +223,10 @@ fun AgentScreen(onOpenClause: (String) -> Unit) {
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("如：太阳中风的病机是什么？") },
                 maxLines = 3,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = {
+                    if (input.isNotBlank()) { vm.send(input); input = "" }
+                }),
             )
             IconButton(
                 onClick = { vm.send(input); input = "" },
