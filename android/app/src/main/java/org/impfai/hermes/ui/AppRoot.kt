@@ -1,5 +1,6 @@
 package org.impfai.hermes.ui
 
+import androidx.compose.foundation.layout.consumeWindowInsets
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.MenuBook
@@ -89,7 +90,9 @@ fun AppRoot() {
         NavHost(
             navController = navController,
             startDestination = "home",
-            modifier = Modifier.padding(padding),
+            // consumeWindowInsets：Scaffold 已吃掉的底部插入不再被子級
+            // imePadding 重複計入（審查發現 #13：輸入欄與鍵盤間死空隙）
+            modifier = Modifier.padding(padding).consumeWindowInsets(padding),
         ) {
             composable("home") {
                 HomeScreen(

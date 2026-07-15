@@ -25,7 +25,7 @@ docs/ANDROID.md              本文档
 | 项目 | 实测结果 |
 |---|---|
 | Python 测试基线（改造前） | **508 passed, 2 skipped**（54s，完全离线） |
-| Python 测试（改造后） | **521 passed, 2 skipped**（新增 13 项 v1 契约测试；docs-sync 守卫同步至 523 项） |
+| Python 测试（改造后） | **523 passed, 2 skipped**（新增 15 项 v1 契约测试；docs-sync 守卫同步至 525 项） |
 | 条文记录 | 681 条（核心 398 条 original_clause） |
 | 方剂规则 | 113 条 formula_pattern_rules |
 | HTTP 路由 | 59 条业务路由 + /livez /readyz |
@@ -175,3 +175,19 @@ cd android
 | 内容更新可校验 | ✅ manifest sha256 + 确定性 zip |
 | Python/Kotlin 金标准一致率 | 部分（TextNorm/BM25 已对照；FormulaMatcher 留 Phase 4） |
 | Crash-free / ANR / P95 | 需真机与灰度环境，非本仓库可验收 |
+
+## 6. 对抗性代码审查记录
+
+合入前对 v1 契约层 + Android 全部代码跑了 5 维度并行审查（后端安全回归、
+网络/DTO 合同、Kotlin↔Python 移植一致性、UI/状态、构建配置），每个发现由
+独立怀疑者代理验证：**20 项发现 → 16 项确认 → 全部修复**。要点：
+
+- 后端：409（run cancel 撞终态）补 `CONFLICT` 错误码；裸 `/api/v1` 修正为
+  留在 API 分支（信封化 404，不再绕过鉴权落入静态处理器）；
+- 客户端：HTTP 200 软错误（`{"error":…}`）不再被当成功渲染空条文；
+  非法服务端地址不再使 Retrofit 构建崩溃逃逸到 UI；收藏按持久化真值回写；
+  检索取消在途请求防乱序覆盖；BM25 舍入与 Python `round(x,4)`（银行家舍入）
+  对齐；`allowBackup=false`（令牌不随云备份外流）；缺省补全 scheme 改为
+  https；release 暂用 debug 签名保证可安装（正式发布须换 IMPF-AI 签名）；
+- 两项「有意偏离」保留并在代码内注明：离线纯数字直查条文（Python 端
+  CJK 分词对纯数字返回空）；方名 +3.0 加分暂不做 lexicon 别名归一（Phase 4）。

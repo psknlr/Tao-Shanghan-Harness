@@ -68,19 +68,36 @@ class HermesRepository(
         return apiFactory.get(s.baseUrl, s.apiToken) to role
     }
 
+    /** Retrofit 構建（非法 baseUrl 拋 IAE）必須在結果類型內失敗，
+     *  不能讓崩潰逃逸到 ViewModel（審查發現 #4）。 */
+    private suspend fun <T> withApi(
+        block: suspend (HermesApi, String?) -> RepoResult<T>,
+    ): RepoResult<T> = try {
+        val (api, role) = api()
+        block(api, role)
+    } catch (e: IllegalArgumentException) {
+        RepoResult.Error("INVALID_BASE_URL",
+            "服务端地址无效，请在“我的”页检查：${e.message ?: ""}")
+    }
+
     private suspend fun offlineOnly(): Boolean = settingsRepo.current().offlineOnly
 
     suspend fun search(query: String, sixChannel: String? = null, topK: Int = 12): RepoResult<SearchData> {
         if (!offlineOnly()) {
-            val (api, role) = api()
-            when (val r = safeCall {
-                api.search(SearchRequest(query = query, topK = topK,
-                    sixChannel = sixChannel, role = role))
-            }) {
-                is ApiResult.Success -> return RepoResult.Data(r.data, ResultOrigin.SERVER, r.meta)
-                is ApiResult.Failure -> return RepoResult.Error(r.code, r.message, r.retryable)
-                is ApiResult.Offline -> { /* fall through to local */ }
+            val remote = withApi<SearchData> { api, role ->
+                when (val r = safeCall {
+                    api.search(SearchRequest(query = query, topK = topK,
+                        sixChannel = sixChannel, role = role))
+                }) {
+                    is ApiResult.Success ->
+                        r.data.errorMessage?.let {
+                            RepoResult.Error("SERVER_MESSAGE", it)
+                        } ?: RepoResult.Data(r.data, ResultOrigin.SERVER, r.meta)
+                    is ApiResult.Failure -> RepoResult.Error(r.code, r.message, r.retryable)
+                    is ApiResult.Offline -> RepoResult.Error("OFFLINE", r.message)
+                }
             }
+            if (!(remote is RepoResult.Error && remote.code == "OFFLINE")) return remote
         }
         val hits = localStore.search(query, topK, sixChannel)
         return RepoResult.Data(
@@ -91,16 +108,31 @@ class HermesRepository(
     }
 
     suspend fun clause(ref: String): RepoResult<ClauseDetail> {
+        var serverError: RepoResult.Error? = null
         if (!offlineOnly()) {
-            val (api, role) = api()
-            when (val r = safeCall { api.clause(ref, role) }) {
-                is ApiResult.Success -> return RepoResult.Data(r.data, ResultOrigin.SERVER, r.meta)
-                is ApiResult.Failure -> return RepoResult.Error(r.code, r.message, r.retryable)
-                is ApiResult.Offline -> { /* fall through to local */ }
+            val remote = withApi<ClauseDetail> { api, role ->
+                when (val r = safeCall { api.clause(ref, role) }) {
+                    is ApiResult.Success ->
+                        // HTTP 200 + {"error": "未找到條文…"}（審查發現 #3）：
+                        // 不能當成功渲染空條文
+                        if (r.data.errorMessage != null || r.data.clauseId.isBlank()) {
+                            RepoResult.Error("SERVER_MESSAGE",
+                                r.data.errorMessage ?: "服务端未返回条文")
+                        } else {
+                            RepoResult.Data(r.data, ResultOrigin.SERVER, r.meta)
+                        }
+                    is ApiResult.Failure -> RepoResult.Error(r.code, r.message, r.retryable)
+                    is ApiResult.Offline -> RepoResult.Error("OFFLINE", r.message)
+                }
+            }
+            when {
+                remote is RepoResult.Data -> return remote
+                remote is RepoResult.Error && remote.code != "OFFLINE" -> serverError = remote
             }
         }
+        // 服務端不可達或未找到 → 本地語料兜底（服務端語料版本偏移時收藏仍可讀）
         val local = localStore.clauseDetail(ref)
-            ?: return RepoResult.Error("NOT_FOUND", "未找到条文 $ref")
+            ?: return serverError ?: RepoResult.Error("NOT_FOUND", "未找到条文 $ref")
         return RepoResult.Data(
             local, ResultOrigin.LOCAL_CORPUS,
             notice = "离线条文：异文/注家/历代引用等证据面需连接服务端",
@@ -116,14 +148,18 @@ class HermesRepository(
             return RepoResult.Error(
                 "OFFLINE", "方证匹配需要连接 Hermes 服务端（离线模式已开启）")
         }
-        val (api, role) = api()
-        return when (val r = safeCall {
-            api.match(MatchRequest(symptoms = symptoms, pulse = pulse,
-                sixChannel = sixChannel?.takeIf { it.isNotBlank() }, role = role))
-        }) {
-            is ApiResult.Success -> RepoResult.Data(r.data, ResultOrigin.SERVER, r.meta)
-            is ApiResult.Failure -> RepoResult.Error(r.code, r.message, r.retryable)
-            is ApiResult.Offline -> RepoResult.Error("OFFLINE", "无法连接服务端：${r.message}")
+        return withApi { api, role ->
+            when (val r = safeCall {
+                api.match(MatchRequest(symptoms = symptoms, pulse = pulse,
+                    sixChannel = sixChannel?.takeIf { it.isNotBlank() }, role = role))
+            }) {
+                is ApiResult.Success ->
+                    r.data.errorMessage?.let {
+                        RepoResult.Error("SERVER_MESSAGE", it)
+                    } ?: RepoResult.Data(r.data, ResultOrigin.SERVER, r.meta)
+                is ApiResult.Failure -> RepoResult.Error(r.code, r.message, r.retryable)
+                is ApiResult.Offline -> RepoResult.Error("OFFLINE", "无法连接服务端：${r.message}")
+            }
         }
     }
 
@@ -131,17 +167,26 @@ class HermesRepository(
         if (offlineOnly()) {
             return RepoResult.Error("OFFLINE", "智能体需要连接 Hermes 服务端（离线模式已开启）")
         }
-        val (api, role) = api()
-        return when (val r = safeCall { api.agent(AgentRequest(question = question, role = role)) }) {
-            is ApiResult.Success -> RepoResult.Data(r.data, ResultOrigin.SERVER, r.meta)
-            is ApiResult.Failure -> RepoResult.Error(r.code, r.message, r.retryable)
-            is ApiResult.Offline -> RepoResult.Error("OFFLINE", "无法连接服务端：${r.message}")
+        return withApi { api, role ->
+            when (val r = safeCall { api.agent(AgentRequest(question = question, role = role)) }) {
+                is ApiResult.Success ->
+                    r.data.errorMessage?.let {
+                        RepoResult.Error("SERVER_MESSAGE", it)
+                    } ?: RepoResult.Data(r.data, ResultOrigin.SERVER, r.meta)
+                is ApiResult.Failure -> RepoResult.Error(r.code, r.message, r.retryable)
+                is ApiResult.Offline -> RepoResult.Error("OFFLINE", "无法连接服务端：${r.message}")
+            }
         }
     }
 
     /** 首頁/設置頁狀態卡：health + whoami + content manifest。 */
     suspend fun serverStatus(): ServerStatus {
-        val (api, role) = api()
+        val (api, role) = try {
+            api()
+        } catch (e: IllegalArgumentException) {
+            return ServerStatus(reachable = false,
+                detail = "服务端地址无效：${e.message ?: ""}")
+        }
         val health: HealthData = when (val r = safeCall { api.health() }) {
             is ApiResult.Success -> r.data
             is ApiResult.Failure -> return ServerStatus(

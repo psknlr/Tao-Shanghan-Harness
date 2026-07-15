@@ -98,6 +98,8 @@ data class SearchData(
     val query: String = "",
     val hits: List<SearchHit> = emptyList(),
     val count: Int = 0,
+    // 服務端「軟錯誤」（HTTP 200 + {"error": ...}）——倉庫層據此判定失敗
+    @SerialName("error") val errorMessage: String? = null,
 )
 
 // ---------------------------------------------------------------- clause
@@ -183,6 +185,7 @@ data class ClauseDetail(
     val mode: String = "",
     @SerialName("safety_notice") val safetyNotice: String = "",
     @SerialName("_role_projection") val roleProjection: JsonObject? = null,
+    @SerialName("error") val errorMessage: String? = null,
 )
 
 // ---------------------------------------------------------------- match
@@ -221,6 +224,7 @@ data class MatchData(
     @SerialName("safety_notice") val safetyNotice: String = "",
     @SerialName("assistive_only") val assistiveOnly: Boolean = false,
     @SerialName("_role_projection") val roleProjection: JsonObject? = null,
+    @SerialName("error") val errorMessage: String? = null,
 )
 
 // ---------------------------------------------------------------- agent
@@ -264,6 +268,7 @@ data class AgentData(
     val mode: String = "",
     @SerialName("safety_notice") val safetyNotice: String = "",
     @SerialName("_role_projection") val roleProjection: JsonObject? = null,
+    @SerialName("error") val errorMessage: String? = null,
 )
 
 // ---------------------------------------------------------------- misc

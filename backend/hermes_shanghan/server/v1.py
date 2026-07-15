@@ -41,6 +41,7 @@ ERROR_CODE_BY_STATUS = {
     401: "UNAUTHENTICATED",
     403: "POLICY_DENIED",
     404: "NOT_FOUND",
+    409: "CONFLICT",           # 如 run cancel 撞上終態（審查發現 #1）
     413: "INVALID_ARGUMENT",
     429: "RATE_LIMITED",
     500: "INTERNAL_ERROR",
@@ -50,9 +51,13 @@ RETRYABLE_CODES = frozenset({"RATE_LIMITED", "NOT_READY"})
 
 
 def rewrite_path(path: str) -> Tuple[bool, str]:
-    """``/api/v1/x`` → ``(True, "/api/x")``；其餘原樣返回 ``(False, path)``。"""
+    """``/api/v1/x`` → ``(True, "/api/x")``；其餘原樣返回 ``(False, path)``。
+
+    裸 ``/api/v1`` 映射為 ``/api/``（保留尾斜杠）：必須留在 _dispatch 的
+    API 分支內（startswith("/api/")），否則會繞過鑒權/信封落進靜態文件
+    處理器（審查發現 #2）。"""
     if path == PREFIX:
-        return True, "/api"
+        return True, "/api/"
     if path.startswith(PREFIX + "/"):
         return True, "/api" + path[len(PREFIX):]
     return False, path

@@ -26,6 +26,9 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
+            // 暫用 debug 簽名使 release 可安裝驗證（審查發現 #14）；
+            // 正式發佈前必須替換為 IMPF-AI 的發佈簽名（keystore 不入庫）
+            signingConfig = signingConfigs.getByName("debug")
         }
     }
     compileOptions {

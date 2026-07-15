@@ -101,10 +101,11 @@ fun AgentScreen(onOpenClause: (String) -> Unit) {
     var input by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
 
-    LaunchedEffect(state.items.size) {
-        if (state.items.isNotEmpty()) {
-            listState.animateScrollToItem(state.items.size - 1)
-        }
+    LaunchedEffect(state.items.size, state.loading) {
+        // 列表首項是說明文字，末項可能是 loading 指示器——按實際總數滾動
+        //（審查發現 #10：按 items.size-1 會停在倒數第二條）
+        val last = listState.layoutInfo.totalItemsCount - 1
+        if (last > 0) listState.animateScrollToItem(last)
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {

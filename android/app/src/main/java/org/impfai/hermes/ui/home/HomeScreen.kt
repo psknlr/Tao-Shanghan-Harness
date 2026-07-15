@@ -26,6 +26,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,6 +66,7 @@ class HomeViewModel(private val container: AppContainer) : ViewModel() {
     init { refresh() }
 
     fun refresh() {
+        if (_state.value.loading) return   // init 與進屏 LaunchedEffect 去重
         viewModelScope.launch {
             _state.value = _state.value.copy(loading = true)
             val settings = container.settings.current()
@@ -94,6 +96,10 @@ fun HomeScreen(
     val vm: HomeViewModel = viewModel { HomeViewModel(container) }
     val state by vm.state.collectAsStateWithLifecycle()
     var query by remember { mutableStateOf("") }
+
+    // 返回首頁時刷新收藏/狀態（審查發現 #11）；首次組合時 init 已在載入，
+    // refresh() 內部去重不會雙跑
+    LaunchedEffect(Unit) { vm.refresh() }
 
     Column(
         modifier = Modifier

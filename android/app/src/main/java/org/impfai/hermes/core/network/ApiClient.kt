@@ -83,7 +83,9 @@ class ApiClientFactory {
             var url = raw.trim()
             if (url.isEmpty()) url = "http://10.0.2.2:8765/"
             if (!url.startsWith("http://") && !url.startsWith("https://")) {
-                url = "http://$url"
+                // 缺省補 https：Release 構建禁明文，補 http 會被 NSC 靜默攔截
+                // 而誤報「離線」（審查發現 #15）；開發者連明文需顯式寫 http://
+                url = "https://$url"
             }
             if (!url.endsWith("/")) url += "/"
             return url

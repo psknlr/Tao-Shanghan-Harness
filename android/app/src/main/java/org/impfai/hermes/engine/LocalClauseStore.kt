@@ -141,6 +141,8 @@ class LocalClauseStore(private val context: Context) {
                 return listOf(toHit(c, 99.0, "clause_number"))
             }
         }
+        // 有意偏離 Python：純數字（如「12」）也直查——Python 端 CJK 分詞
+        // 對純數字查詢只會返回空；移動端輸入數字期望直達條文
         norm.toIntOrNull()?.let { n ->
             byNumber[n]?.let { c -> return listOf(toHit(c, 99.0, "clause_number")) }
         }
@@ -154,6 +156,9 @@ class LocalClauseStore(private val context: Context) {
             if (sixChannel != null && c.sixChannel != sixChannel) continue
             var score = 10.0 * bm / bmMax
             if (c.textType != "original_clause") score *= 0.7
+            // 已知差距：Python 走 lexicon.canonical_formula 別名歸一
+            //（「桂枝湯」的各種別名同享 +3.0），離線層只做規範化後精確
+            // 匹配——lexicon 移植歸入 Phase 4 金標準對照
             if (c.formulaNames.any { TextNorm.foldVariants(it) == norm }) score += 3.0
             if (c.formulaNames.isNotEmpty()) score += 0.5
             out.add(c to score)
@@ -162,7 +167,8 @@ class LocalClauseStore(private val context: Context) {
             .sortedWith(compareByDescending<Pair<LocalClause, Double>> { it.second }
                 .thenBy { it.first.clauseId })
             .take(topK)
-            .map { (c, s) -> toHit(c, s, "local_bm25") }
+            // Python _hit 展示 round(score, 3)
+            .map { (c, s) -> toHit(c, Bm25Index.roundHalfEven(s, 3), "local_bm25") }
     }
 
     private fun toHit(c: LocalClause, score: Double, source: String) = SearchHit(

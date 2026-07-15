@@ -38,6 +38,20 @@ class TestEnvelopeUnit(unittest.TestCase):
         self.assertEqual(v1.rewrite_path("/api/search"),
                          (False, "/api/search"))
         self.assertEqual(v1.rewrite_path("/livez"), (False, "/livez"))
+        # 裸 /api/v1 必須留在 API 分支（帶尾斜杠），不得落入靜態處理器
+        is_v1, rewritten = v1.rewrite_path("/api/v1")
+        self.assertTrue(is_v1)
+        self.assertTrue(rewritten.startswith("/api/"))
+
+    def test_conflict_status_mapped(self):
+        # run cancel 撞終態等業務衝突（_status=409）→ CONFLICT，而非
+        # 與服務端崩潰同碼的 INTERNAL_ERROR
+        env = v1.envelope(409, {"run_id": "r1", "cancel_requested": False,
+                                "reason": "terminal_state:completed"})
+        self.assertEqual(env["error"]["code"], "CONFLICT")
+        self.assertFalse(env["error"]["retryable"])
+        self.assertEqual(env["error"]["details"]["reason"],
+                         "terminal_state:completed")
 
     def test_success_envelope(self):
         env = v1.envelope(200, {"hits": []}, request_id="req1",
@@ -136,6 +150,15 @@ class TestV1HTTP(unittest.TestCase):
         self.assertEqual(code, 404)
         self.assertEqual(out["error"]["code"], "NOT_FOUND")
         self.assertIsNone(out["data"])
+
+    def test_v1_bare_root_stays_in_api_branch(self):
+        # 裸 /api/v1（GET/POST）走 API 分支：信封化 404，而非靜態 404
+        for method in ("GET", "POST"):
+            code, out = self._req(method, "/api/v1",
+                                  body={} if method == "POST" else None)
+            self.assertEqual(code, 404)
+            self.assertEqual(out["error"]["code"], "NOT_FOUND")
+            self.assertEqual(out["api_version"], "v1")
 
     def test_v1_invalid_json(self):
         url = f"http://127.0.0.1:{self.port}/api/v1/search"

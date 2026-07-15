@@ -55,9 +55,18 @@ class Bm25Index(
                 scores[i] = (scores[i] ?: 0.0) + idf * tf * (k1 + 1) / denom
             }
         }
+        // 與 Python 一致：按原始分排序截斷，返回值 round(s, 4)（銀行家舍入）
+        // ——下游 LocalClauseStore 消費的是舍入後的 bm（審查發現 #5）
         return scores.entries
             .sortedByDescending { it.value }
             .take(topK)
-            .map { docIds[it.key] to it.value }
+            .map { docIds[it.key] to roundHalfEven(it.value, 4) }
+    }
+
+    companion object {
+        fun roundHalfEven(v: Double, scale: Int): Double =
+            java.math.BigDecimal(v)
+                .setScale(scale, java.math.RoundingMode.HALF_EVEN)
+                .toDouble()
     }
 }

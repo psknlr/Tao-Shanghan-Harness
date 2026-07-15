@@ -96,10 +96,14 @@ class SearchViewModel(
         search()
     }
 
+    private var searchJob: kotlinx.coroutines.Job? = null
+
     fun search() {
         val st = _state.value
         if (st.query.isBlank() && st.channel.isBlank()) return
-        viewModelScope.launch {
+        // 取消在途請求：亂序響應會把舊查詢結果蓋到新查詢上（審查發現 #9）
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
             _state.value = st.copy(loading = true, error = "", notice = "")
             // 空查詢 + 頻道過濾：用頻道名做查詢詞（服務端/本地都按 BM25 命中提綱條文）
             val effectiveQuery = st.query.ifBlank { st.channel }

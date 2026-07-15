@@ -91,8 +91,11 @@ class ClauseViewModel(
     fun toggleFavorite() {
         val id = _state.value.detail?.clauseId ?: return
         viewModelScope.launch {
+            // 以持久化後的真值回寫，不做盲反轉（審查發現 #8：
+            // init 快照可能已過期，盲反轉會與 DataStore 實際狀態脫節）
             container.settings.toggleFavorite(id)
-            _state.value = _state.value.copy(favorite = !_state.value.favorite)
+            val nowFavorite = id in container.settings.current().favorites
+            _state.value = _state.value.copy(favorite = nowFavorite)
         }
     }
 }
@@ -141,7 +144,7 @@ fun ClauseScreen(
         },
     ) { padding ->
         if (state.loading) {
-            Row(Modifier.fillMaxWidth().padding(32.dp),
+            Row(Modifier.fillMaxWidth().padding(padding).padding(32.dp),
                 horizontalArrangement = Arrangement.Center) {
                 CircularProgressIndicator()
             }
