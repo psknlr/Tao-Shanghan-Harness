@@ -32,6 +32,9 @@ class AnnotationStore(private val context: Context) {
         val note: String = "",
         val kind: String = "HIGHLIGHT",
         val createdAt: Long = 0,
+        // 字句級選區（v1.5）：段內字符偏移；-1 表示整段
+        val selStart: Int = -1,
+        val selEnd: Int = -1,
     )
 
     private val json = Json { ignoreUnknownKeys = true; prettyPrint = false }
@@ -74,6 +77,7 @@ class AnnotationStore(private val context: Context) {
     suspend fun add(
         bookId: String, bookTitle: String, section: String, paraIndex: Int,
         excerpt: String, kind: Kind, note: String = "",
+        selStart: Int = -1, selEnd: Int = -1,
     ): Annotation {
         val a = Annotation(
             id = UUID.randomUUID().toString().take(8),
@@ -81,6 +85,7 @@ class AnnotationStore(private val context: Context) {
             paraIndex = paraIndex, excerpt = excerpt.take(60),
             note = note, kind = kind.name,
             createdAt = System.currentTimeMillis(),
+            selStart = selStart, selEnd = selEnd,
         )
         save(load() + a)
         return a

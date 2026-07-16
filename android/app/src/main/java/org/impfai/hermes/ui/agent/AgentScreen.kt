@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
@@ -61,6 +62,12 @@ sealed interface ChatItem {
     data class User(val text: String) : ChatItem
     data class Bot(val data: AgentData) : ChatItem
     data class Failure(val message: String) : ChatItem
+
+    /** 直連流式中間態：步驟時間線 + 增量文本。 */
+    data class Streaming(
+        val steps: List<String>,
+        val partial: String,
+    ) : ChatItem
 }
 
 class AgentViewModel(private val container: AppContainer) : ViewModel() {
@@ -95,23 +102,51 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
+    private fun replaceLast(item: ChatItem) {
+        _state.value = _state.value.copy(
+            items = _state.value.items.dropLast(1) + item)
+    }
+
     fun send(question: String) {
         val q = question.trim()
         if (q.isBlank() || _state.value.loading) return
         _state.value = _state.value.copy(
             items = _state.value.items + ChatItem.User(q), loading = true)
         viewModelScope.launch {
-            val result = if (_state.value.source == "direct") {
-                container.repo.directAgent(q)
+            if (_state.value.source == "direct") {
+                // 直連：流式——思考/檢索步驟時間線 + 增量文本
+                var steps = listOf<String>()
+                var partial = ""
+                _state.value = _state.value.copy(
+                    items = _state.value.items + ChatItem.Streaming(steps, ""))
+                val result = container.repo.directAgentStream(q) { ev ->
+                    when (ev) {
+                        is org.impfai.hermes.data.HermesRepository
+                            .StreamEvent.Step -> steps = steps + ev.label
+                        is org.impfai.hermes.data.HermesRepository
+                            .StreamEvent.Delta -> partial += ev.text
+                    }
+                    viewModelScope.launch {
+                        replaceLast(ChatItem.Streaming(steps, partial))
+                    }
+                }
+                val item = when (result) {
+                    is RepoResult.Data -> ChatItem.Bot(result.value)
+                    is RepoResult.Error ->
+                        ChatItem.Failure("${result.code}: ${result.message}")
+                }
+                replaceLast(item)
+                _state.value = _state.value.copy(loading = false)
             } else {
-                container.repo.agent(q)
+                val result = container.repo.agent(q)
+                val item = when (result) {
+                    is RepoResult.Data -> ChatItem.Bot(result.value)
+                    is RepoResult.Error ->
+                        ChatItem.Failure("${result.code}: ${result.message}")
+                }
+                _state.value = _state.value.copy(
+                    items = _state.value.items + item, loading = false)
             }
-            val item = when (result) {
-                is RepoResult.Data -> ChatItem.Bot(result.value)
-                is RepoResult.Error -> ChatItem.Failure("${result.code}: ${result.message}")
-            }
-            _state.value = _state.value.copy(
-                items = _state.value.items + item, loading = false)
         }
     }
 }
@@ -193,6 +228,30 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                         )
                     }
                     is ChatItem.Bot -> BotCard(item.data, state.simplified, onOpenClause)
+                    is ChatItem.Streaming -> Card {
+                        Column(Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            item.steps.forEach { s ->
+                                Text(s, style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary)
+                            }
+                            if (item.partial.isNotBlank()) {
+                                Text(item.partial.display(state.simplified) + " ▌",
+                                    style = MaterialTheme.typography.bodyMedium)
+                            } else {
+                                Row(verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement =
+                                        Arrangement.spacedBy(8.dp)) {
+                                    CircularProgressIndicator(
+                                        Modifier.size(16.dp))
+                                    Text("生成中…",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme
+                                            .colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
                     is ChatItem.Failure -> Card(
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.errorContainer),

@@ -118,6 +118,48 @@ class DirectLlmTest {
     }
 
     @Test
+    fun openai_stream_sse_parsing() = runBlocking {
+        val server = MockWebServer()
+        val sse = buildString {
+            append("data: {\"choices\":[{\"delta\":{\"content\":\"太陽\"}}]}\n\n")
+            append("data: {\"choices\":[{\"delta\":{\"content\":\"中風\"}}]}\n\n")
+            append("data: [DONE]\n\n")
+        }
+        server.enqueue(MockResponse().setBody(sse))
+        server.start()
+        val deltas = StringBuilder()
+        val r = DirectLlm.completeStream(
+            DirectLlm.PROVIDER_OPENAI, "k",
+            server.url("/").toString().trimEnd('/'), "m", "s", "u",
+        ) { deltas.append(it) }
+        assertTrue(r.isSuccess)
+        assertEquals("太陽中風", r.getOrThrow())
+        assertEquals("太陽中風", deltas.toString())
+        server.shutdown()
+    }
+
+    @Test
+    fun anthropic_stream_sse_parsing() = runBlocking {
+        val server = MockWebServer()
+        val sse = buildString {
+            append("event: content_block_delta\n")
+            append("data: {\"type\":\"content_block_delta\"," +
+                "\"delta\":{\"type\":\"text_delta\",\"text\":\"往來\"}}\n\n")
+            append("data: {\"type\":\"content_block_delta\"," +
+                "\"delta\":{\"type\":\"text_delta\",\"text\":\"寒熱\"}}\n\n")
+            append("data: {\"type\":\"message_stop\"}\n\n")
+        }
+        server.enqueue(MockResponse().setBody(sse))
+        server.start()
+        val r = DirectLlm.completeStream(
+            DirectLlm.PROVIDER_ANTHROPIC, "k",
+            server.url("/").toString().trimEnd('/'), "m", "s", "u") { }
+        assertTrue(r.isSuccess)
+        assertEquals("往來寒熱", r.getOrThrow())
+        server.shutdown()
+    }
+
+    @Test
     fun presets_cover_minimax_and_poe() {
         val labels = DirectLlm.PRESETS.map { it.label }
         assertTrue(labels.any { it.contains("Poe") })

@@ -189,6 +189,94 @@ object DirectLlm {
         }
     }
 
+    /**
+     * 流式補全（SSE）：OpenAI 兼容端點 `stream:true` 的
+     * `choices[0].delta.content`；Anthropic `content_block_delta` 的
+     * `delta.text`。onDelta 在 IO 線程回調增量文本；返回完整文本。
+     */
+    suspend fun completeStream(
+        provider: String, apiKey: String, baseUrl: String, model: String,
+        system: String, user: String, maxTokens: Int = 2048,
+        onDelta: (String) -> Unit,
+    ): Result<String> = withContext(Dispatchers.IO) {
+        if (apiKey.isBlank()) {
+            return@withContext Result.failure(
+                IllegalStateException("未配置 API Key"))
+        }
+        val base = (baseUrl.ifBlank { defaultBaseUrl(provider) }).trimEnd('/')
+        val mdl = model.ifBlank { defaultModel(provider) }
+        val anthropic = provider == PROVIDER_ANTHROPIC
+        val url = endpointUrl(base,
+            if (anthropic) "messages" else "chat/completions")
+        val body = if (anthropic) buildJsonObject {
+            put("model", mdl); put("max_tokens", maxTokens); put("stream", true)
+            put("system", system)
+            put("messages", buildJsonArray {
+                add(buildJsonObject { put("role", "user"); put("content", user) })
+            })
+        } else buildJsonObject {
+            put("model", mdl); put("max_tokens", maxTokens); put("stream", true)
+            put("messages", buildJsonArray {
+                add(buildJsonObject { put("role", "system"); put("content", system) })
+                add(buildJsonObject { put("role", "user"); put("content", user) })
+            })
+        }
+        val reqB = Request.Builder().url(url)
+            .post(body.toString().toRequestBody(media))
+        if (anthropic) {
+            reqB.header("x-api-key", apiKey)
+                .header("anthropic-version", "2023-06-01")
+        } else {
+            reqB.header("Authorization", "Bearer $apiKey")
+        }
+        try {
+            client.newCall(reqB.build()).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    val text = resp.body?.string().orEmpty()
+                    return@withContext Result.failure(
+                        httpError(resp.code, text, url))
+                }
+                val sb = StringBuilder()
+                val source = resp.body?.source()
+                    ?: return@withContext Result.failure(
+                        IllegalStateException("空响应体"))
+                while (true) {
+                    val line = source.readUtf8Line() ?: break
+                    if (!line.startsWith("data:")) continue
+                    val payload = line.removePrefix("data:").trim()
+                    if (payload.isEmpty() || payload == "[DONE]") continue
+                    val delta = try {
+                        val o = json.parseToJsonElement(payload).jsonObject
+                        if (anthropic) {
+                            if (o["type"]?.jsonPrimitive?.content ==
+                                "content_block_delta")
+                                o["delta"]?.jsonObject?.get("text")
+                                    ?.jsonPrimitive?.content
+                            else null
+                        } else {
+                            o["choices"]?.jsonArray?.firstOrNull()?.jsonObject
+                                ?.get("delta")?.jsonObject?.get("content")
+                                ?.jsonPrimitive?.content
+                        }
+                    } catch (_: Exception) { null }
+                    if (!delta.isNullOrEmpty()) {
+                        sb.append(delta); onDelta(delta)
+                    }
+                }
+                if (sb.isBlank())
+                    Result.failure(IllegalStateException(
+                        "模型返回空内容（该端点可能不支持流式，可重试）"))
+                else Result.success(sb.toString())
+            }
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: IOException) {
+            Result.failure(IOException("网络请求失败：${e.message}", e))
+        } catch (e: Exception) {
+            Result.failure(e)
+        }
+    }
+
     private fun httpError(code: Int, body: String, url: String): Exception {
         val hint = when (code) {
             400 -> "请求被拒（HTTP 400，常见原因：模型名不存在或参数不符）"

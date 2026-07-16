@@ -194,7 +194,194 @@ fun TeachScreen(onOpenClause: (String) -> Unit, onBack: () -> Unit) {
                         ClauseChips(rule.coreClauses, simplified, onOpenClause, max = 16)
                     }
                 }
+                item {
+                    QuizSection(rule, simplified, onOpenClause)
+                }
             }
+        }
+    }
+}
+
+// ---------------------------------------------------------------- AI 出題
+@kotlinx.serialization.Serializable
+data class QuizQ(
+    val q: String = "",
+    val options: List<String> = emptyList(),
+    val answer: Int = 0,
+    val explain: String = "",
+    @kotlinx.serialization.SerialName("clause_id") val clauseId: String = "",
+)
+
+private val quizJson = kotlinx.serialization.json.Json {
+    ignoreUnknownKeys = true; coerceInputValues = true
+}
+
+/** 本地確定性出題兜底：核心條文挖空方名（同 channel 同題，可復現）。 */
+private suspend fun localQuiz(
+    container: org.impfai.hermes.AppContainer,
+    rule: LocalClauseStore.SixChannelRule,
+): List<QuizQ> {
+    val store = container.localStore
+    store.ensureLoaded()
+    val rng = kotlin.random.Random(rule.sixChannel.hashCode())
+    val allFormulas = store.formulaCatalog().map { it.formula }.distinct()
+    return rule.coreClauses.mapNotNull { store.byId(it) }
+        .filter { it.formulaNames.isNotEmpty() && it.clauseNumber != null }
+        .shuffled(rng).take(5)
+        .mapNotNull { c ->
+            val correct = c.formulaNames.first()
+            if (correct !in c.cleanText) return@mapNotNull null
+            val distract = allFormulas.filter { it != correct }
+                .shuffled(rng).take(3)
+            val opts = (distract + correct).shuffled(rng)
+            QuizQ(
+                q = "第${c.clauseNumber}条：「" +
+                    c.cleanText.replace(correct, "____") + "」空缺处当用何方？",
+                options = opts, answer = opts.indexOf(correct),
+                explain = "原文为「$correct」主之。",
+                clauseId = c.clauseId,
+            )
+        }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+private fun QuizSection(
+    rule: LocalClauseStore.SixChannelRule,
+    simplified: Boolean,
+    onOpenClause: (String) -> Unit,
+) {
+    val container = rememberContainer()
+    val scope = rememberCoroutineScope()
+    var quiz by remember(rule.sixChannel) { mutableStateOf<List<QuizQ>>(emptyList()) }
+    var answers by remember(rule.sixChannel) { mutableStateOf(mapOf<Int, Int>()) }
+    var submitted by remember(rule.sixChannel) { mutableStateOf(false) }
+    var generating by remember { mutableStateOf(false) }
+    var sourceLabel by remember { mutableStateOf("") }
+    var quizError by remember { mutableStateOf("") }
+
+    fun generate() {
+        if (generating) return
+        scope.launch {
+            generating = true; quizError = ""; submitted = false
+            answers = emptyMap()
+            val s = container.settings.current()
+            var made: List<QuizQ> = emptyList()
+            if (org.impfai.hermes.BuildConfig.VIP && s.llmApiKey.isNotBlank()) {
+                val clauses = rule.coreClauses.take(8)
+                    .mapNotNull { container.localStore.byId(it) }
+                    .joinToString("\n") { "[${it.clauseId}] ${it.cleanText}" }
+                val res = org.impfai.hermes.core.llm.DirectLlm.complete(
+                    s.llmProvider, s.llmApiKey, s.llmBaseUrl, s.llmModel,
+                    system = "你是《伤寒论》六经教学出题专家。根据给定纲领与" +
+                        "条文原文出 5 道单选题（考病机辨识、方证对应、鉴别眼目），" +
+                        "每题 4 个选项。只依据给定条文，clause_id 必须取自给定" +
+                        "编号。严格输出 JSON 数组，无任何其他文字：" +
+                        """[{"q":"题干","options":["A","B","C","D"],""" +
+                        """"answer":0,"explain":"解析","clause_id":"SHL_..."}]""",
+                    user = "六经：${rule.sixChannel}\n纲领：${rule.outlineText}\n" +
+                        "总说：${rule.summary}\n条文：\n$clauses",
+                    maxTokens = 2500,
+                ).getOrNull()
+                if (res != null) {
+                    val start = res.indexOf('[')
+                    val end = res.lastIndexOf(']')
+                    if (start in 0 until end) {
+                        made = try {
+                            quizJson.decodeFromString<List<QuizQ>>(
+                                res.substring(start, end + 1))
+                                .filter { it.options.size == 4 &&
+                                    it.answer in 0..3 && it.q.isNotBlank() }
+                        } catch (_: Exception) { emptyList() }
+                    }
+                }
+                if (made.isNotEmpty()) sourceLabel = "AI 出题（直连大模型）"
+            }
+            if (made.isEmpty()) {
+                made = localQuiz(container, rule)
+                sourceLabel = if (made.isNotEmpty()) "本地出题（条文挖空）"
+                else ""
+                if (made.isEmpty()) quizError = "本经无可出题条文"
+            }
+            quiz = made
+            generating = false
+        }
+    }
+
+    SectionCard("八、练习题（AI 出题）") {
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            androidx.compose.material3.Button(
+                onClick = { generate() }, enabled = !generating) {
+                Text(if (generating) "出题中…"
+                else if (quiz.isEmpty()) "生成练习题" else "换一组")
+            }
+            if (sourceLabel.isNotBlank()) {
+                Text(sourceLabel, style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.padding(top = 12.dp))
+            }
+        }
+        if (quizError.isNotBlank()) NoticeBar(quizError, warning = true)
+        quiz.forEachIndexed { qi, qq ->
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(10.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Text("${qi + 1}. ${qq.q}".display(simplified),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold)
+                    FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        qq.options.forEachIndexed { oi, opt ->
+                            val chosen = answers[qi] == oi
+                            val showState = submitted &&
+                                (oi == qq.answer || chosen)
+                            FilterChip(
+                                selected = chosen,
+                                onClick = {
+                                    if (!submitted) {
+                                        answers = answers + (qi to oi)
+                                    }
+                                },
+                                label = {
+                                    Text(opt.display(simplified) + when {
+                                        !showState -> ""
+                                        oi == qq.answer -> " ✓"
+                                        chosen -> " ✗"
+                                        else -> ""
+                                    })
+                                },
+                            )
+                        }
+                    }
+                    if (submitted) {
+                        val right = answers[qi] == qq.answer
+                        Text((if (right) "✓ 正确。" else "✗ 错误。") +
+                            qq.explain.display(simplified),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (right)
+                                androidx.compose.ui.graphics.Color(0xFF2E7D32)
+                            else MaterialTheme.colorScheme.error)
+                        if (qq.clauseId.isNotBlank()) {
+                            ClauseChips(listOf(qq.clauseId), simplified,
+                                onOpenClause, max = 1)
+                        }
+                    }
+                }
+            }
+        }
+        if (quiz.isNotEmpty() && !submitted) {
+            androidx.compose.material3.Button(
+                onClick = { submitted = true },
+                enabled = answers.size == quiz.size) {
+                Text("交卷（已答 ${answers.size}/${quiz.size}）")
+            }
+        }
+        if (submitted) {
+            val score = quiz.indices.count { answers[it] == quiz[it].answer }
+            Text("得分：$score / ${quiz.size}",
+                style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary)
         }
     }
 }

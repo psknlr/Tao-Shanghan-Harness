@@ -149,9 +149,10 @@ fun AppRoot() {
                         navController.navigate(
                             "agent?prefill=${android.net.Uri.encode(question)}")
                     },
-                    onOpenBook = { book ->
+                    onOpenBook = { book, locate ->
                         navController.navigate(
-                            "reader?title=${android.net.Uri.encode(book)}&section=")
+                            "reader?title=${android.net.Uri.encode(book)}" +
+                                "&section=&locate=${android.net.Uri.encode(locate)}")
                     },
                 )
             }
@@ -189,15 +190,17 @@ fun AppRoot() {
                 )
             }
             composable(
-                route = "reader?title={title}&section={section}",
+                route = "reader?title={title}&section={section}&locate={locate}",
                 arguments = listOf(
                     navArgument("title") { defaultValue = "" },
                     navArgument("section") { defaultValue = "" },
+                    navArgument("locate") { defaultValue = "" },
                 ),
             ) { entry ->
                 ReaderScreen(
                     titleOrId = entry.arguments?.getString("title") ?: "",
                     initialSection = entry.arguments?.getString("section") ?: "",
+                    locateText = entry.arguments?.getString("locate") ?: "",
                     onBack = { navController.popBackStack() },
                 )
             }

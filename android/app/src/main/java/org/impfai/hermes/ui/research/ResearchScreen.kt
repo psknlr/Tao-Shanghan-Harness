@@ -40,6 +40,7 @@ import org.impfai.hermes.BuildConfig
 import org.impfai.hermes.core.llm.DirectLlm
 import org.impfai.hermes.engine.Charts
 import org.impfai.hermes.engine.DocxWriter
+import org.impfai.hermes.engine.PaperTheory
 import org.impfai.hermes.engine.ResearchEngine
 import org.impfai.hermes.ui.common.NoticeBar
 import org.impfai.hermes.ui.common.SectionCard
@@ -62,15 +63,17 @@ fun ResearchScreen(onOpenClause: (String) -> Unit, onBack: () -> Unit) {
     var report by remember { mutableStateOf<ResearchEngine.Report?>(null) }
     var chartSym by remember { mutableStateOf<Bitmap?>(null) }
     var chartHerb by remember { mutableStateOf<Bitmap?>(null) }
-    var polished by remember { mutableStateOf("") }
+    var aiIntro by remember { mutableStateOf("") }
+    var aiDiscussion by remember { mutableStateOf("") }
     var polishing by remember { mutableStateOf(false) }
+    var showPaper by remember { mutableStateOf(false) }
     var exportMsg by remember { mutableStateOf("") }
     var simplified by remember { mutableStateOf(true) }
 
     fun mine() {
         if (topic.isBlank() || mining) return
         scope.launch {
-            mining = true; polished = ""; exportMsg = ""
+            mining = true; aiIntro = ""; aiDiscussion = ""; exportMsg = ""
             simplified = container.settings.current().simplifiedDisplay
             val r = ResearchEngine.mine(container.localStore, topic)
             report = r
@@ -85,51 +88,59 @@ fun ResearchScreen(onOpenClause: (String) -> Unit, onBack: () -> Unit) {
         }
     }
 
+    /** 完整篇章結構（v1.5）：題名/摘要/關鍵詞/引言/方法/結果/討論/
+     *  結論/附錄——中醫理論深度由 PaperTheory 模板 + 可選 AI 撰寫承擔。 */
     fun buildBlocks(r: ResearchEngine.Report): List<DocxWriter.Block> {
         val b = ArrayList<DocxWriter.Block>()
+        val mainChannel = r.channelDist.firstOrNull()?.first ?: "太陽病"
+        val topSymptoms = r.symptomFreq.map { it.first }
+        val topHerbs = r.herbFreq.map { it.first }
         b += DocxWriter.Block.Para(
-            "研发者：医哲未来人工智能研究院（IMPF-AI）· 伤寒Hermes 端侧研究草稿",
-            italic = true)
+            "医哲未来人工智能研究院（IMPF-AI）· 伤寒Hermes 端侧生成", italic = true)
         b += DocxWriter.Block.Heading(1, "摘要")
+        b += DocxWriter.Block.Para(PaperTheory.abstractTemplate(
+            r.topic, r.totalClauses, topSymptoms, topHerbs, mainChannel))
+        b += DocxWriter.Block.Para("关键词：${r.topic}；伤寒论；六经辨证；" +
+            topSymptoms.take(2).joinToString("；") + "；文献计量")
+        b += DocxWriter.Block.Heading(1, "一、引言")
         b += DocxWriter.Block.Para(
-            "本文基于《伤寒论》宋本 398 条核心条文语料，围绕「${r.topic}」" +
-                "检得相关条文 ${r.totalClauses} 条，统计其证候分布、用药频次与" +
-                "药对共现结构，并给出六经分布概览。全部统计为端侧确定性计算，" +
-                "证据条文可逐条回源。" +
-                (polished.takeIf { it.isNotBlank() }?.let { "" } ?: ""))
-        if (polished.isNotBlank()) {
-            b += DocxWriter.Block.Heading(1, "AI 润色稿（直连大模型生成，仅供参考）")
-            b += DocxWriter.Block.Para(polished)
-        }
-        b += DocxWriter.Block.Heading(1, "方法")
-        b += DocxWriter.Block.Para(
-            "以「${r.topic}」为检索词，经简繁归一与异体字折叠后，" +
-                "在条文正文、证候要素与方名字段上做包含匹配 + BM25 检索合并；" +
-                "对命中条文统计症状/药物频次、同方药对共现与六经归属。")
-        b += DocxWriter.Block.Heading(1, "结果")
-        b += DocxWriter.Block.Heading(2, "1. 症状频次")
+            aiIntro.ifBlank { PaperTheory.introTemplate(r.topic, r.totalClauses) })
+        b += DocxWriter.Block.Heading(1, "二、材料与方法")
+        b += DocxWriter.Block.Para(PaperTheory.methodsTemplate(r.topic))
+        b += DocxWriter.Block.Heading(1, "三、结果")
+        b += DocxWriter.Block.Heading(2, "3.1 症状频次")
         b += DocxWriter.Block.Table(listOf("症状", "频次"),
             r.symptomFreq.map { listOf(it.first, it.second.toString()) })
         chartSym?.let { b += DocxWriter.Block.Image(it, "图1 症状频次") }
-        b += DocxWriter.Block.Heading(2, "2. 药物频次")
+        b += DocxWriter.Block.Heading(2, "3.2 药物频次")
         b += DocxWriter.Block.Table(listOf("药物", "频次"),
             r.herbFreq.map { listOf(it.first, it.second.toString()) })
         chartHerb?.let { b += DocxWriter.Block.Image(it, "图2 药物频次") }
-        b += DocxWriter.Block.Heading(2, "3. 药对共现（同方内）")
+        b += DocxWriter.Block.Heading(2, "3.3 药对共现（同方内）")
         b += DocxWriter.Block.Table(listOf("药对", "共现次数"),
             r.herbPairFreq.map { listOf(it.first, it.second.toString()) })
-        b += DocxWriter.Block.Heading(2, "4. 六经分布")
+        b += DocxWriter.Block.Heading(2, "3.4 六经分布")
         b += DocxWriter.Block.Table(listOf("六经", "条文数"),
             r.channelDist.map { listOf(it.first, it.second.toString()) })
-        b += DocxWriter.Block.Heading(1, "讨论（骨架）")
+        b += DocxWriter.Block.Heading(1, "四、讨论")
+        if (aiDiscussion.isNotBlank()) {
+            b += DocxWriter.Block.Para(aiDiscussion)
+            b += DocxWriter.Block.Para(
+                "（以上讨论由直连大模型基于本文统计与证据条文生成，" +
+                    "已经本地引用核验，仍须作者逐条回源审定。）", italic = true)
+        } else {
+            PaperTheory.discussionSkeleton(r.topic, r.channelDist,
+                r.herbPairFreq, topSymptoms).forEach {
+                b += DocxWriter.Block.Para(it)
+            }
+        }
+        b += DocxWriter.Block.Heading(1, "五、结论")
         b += DocxWriter.Block.Para(
-            "（1）高频证候与核心病机的对应关系；（2）高频药物与药对提示的" +
-                "配伍结构；（3）六经分布反映的传变路径。以上论点须逐条" +
-                "回源到证据条文后方可成文——本草稿仅提供计量骨架。")
-        b += DocxWriter.Block.Heading(1, "证据条文（附录）")
+            PaperTheory.conclusionTemplate(r.topic, mainChannel))
+        b += DocxWriter.Block.Heading(1, "附录：证据条文")
         b += DocxWriter.Block.Para(r.relatedClauseIds.joinToString("、"))
         b += DocxWriter.Block.Para(
-            "声明：本文为古籍文献计量研究草稿，不构成诊疗建议。", italic = true)
+            "声明：本文为古籍文献计量研究文稿，不构成诊疗建议。", italic = true)
         return b
     }
 
@@ -247,36 +258,93 @@ fun ResearchScreen(onOpenClause: (String) -> Unit, onBack: () -> Unit) {
                                 scope.launch {
                                     polishing = true
                                     val s = container.settings.current()
-                                    val draft = "主题：《伤寒论》「${r.topic}」；" +
-                                        "相关条文${r.totalClauses}条；症状频次：" +
+                                    val topClauses = r.relatedClauseIds.take(5)
+                                        .mapNotNull { id ->
+                                            container.localStore.byId(id)?.let {
+                                                "[$id] ${it.cleanText}"
+                                            }
+                                        }.joinToString("\n")
+                                    val draft = "主题：《伤寒论》「${r.topic}」\n" +
+                                        "相关条文 ${r.totalClauses} 条\n症状频次：" +
                                         r.symptomFreq.joinToString("、") {
                                             "${it.first}${it.second}"
-                                        } + "；药物频次：" +
+                                        } + "\n药物频次：" +
                                         r.herbFreq.joinToString("、") {
                                             "${it.first}${it.second}"
-                                        } + "；六经分布：" +
+                                        } + "\n药对共现：" +
+                                        r.herbPairFreq.joinToString("、") {
+                                            "${it.first}${it.second}"
+                                        } + "\n六经分布：" +
                                         r.channelDist.joinToString("、") {
                                             "${it.first}${it.second}"
-                                        }
+                                        } + "\n代表条文：\n" + topClauses
                                     val res = DirectLlm.complete(
                                         s.llmProvider, s.llmApiKey, s.llmBaseUrl,
                                         s.llmModel,
-                                        system = "你是中医文献计量论文写作助手。" +
-                                            "基于给定统计数据撰写 300 字以内的" +
-                                            "学术摘要与讨论要点，只使用给定数据，" +
-                                            "不得虚构数字或文献，不给临床建议。",
-                                        user = draft)
-                                    polished = res.getOrElse { "润色失败：${it.message}" }
+                                        system = "你是中医经方文献研究论文写作专家，" +
+                                            "深谙六经辨证理论。基于给定统计数据与" +
+                                            "条文原文，撰写论文的【引言】（400字内，" +
+                                            "含研究背景、理论源流、研究意义）与" +
+                                            "【讨论】（600字内，含病机阐释、配伍" +
+                                            "法度、传变规律三层论述）。只使用给定" +
+                                            "数据与条文，引用条文用其方括号 ID，" +
+                                            "不得虚构文献，不给临床用药建议。" +
+                                            "输出格式：【引言】…【讨论】…",
+                                        user = draft, maxTokens = 3000)
+                                    res.onSuccess { full ->
+                                        val di = full.indexOf("【讨论】")
+                                        if (di > 0) {
+                                            aiIntro = full.substring(0, di)
+                                                .removePrefix("【引言】").trim()
+                                            aiDiscussion = full.substring(di)
+                                                .removePrefix("【讨论】").trim()
+                                        } else {
+                                            aiDiscussion = full.trim()
+                                        }
+                                    }.onFailure {
+                                        exportMsg = "AI 撰写失败：${it.message}"
+                                    }
                                     polishing = false
                                 }
                             }) {
-                                Text(if (polishing) "润色中…"
-                                else "AI 润色摘要/讨论（直连大模型）")
+                                Text(if (polishing) "撰写中…"
+                                else "✦ AI 撰写引言与讨论（直连大模型）")
                             }
-                            if (polished.isNotBlank()) {
-                                SectionCard("AI 润色稿（随 DOCX 导出）") {
-                                    Text(polished,
-                                        style = MaterialTheme.typography.bodySmall)
+                        }
+                    }
+                }
+                item {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        OutlinedButton(onClick = { showPaper = !showPaper }) {
+                            Text(if (showPaper) "收起全文预览" else "▤ 全文预览（完整篇章）")
+                        }
+                        if (showPaper) {
+                            SectionCard("《伤寒论》「${r.topic}」方证计量研究") {
+                                buildBlocks(r).forEach { blk ->
+                                    when (blk) {
+                                        is DocxWriter.Block.Heading -> Text(
+                                            blk.text,
+                                            style = if (blk.level <= 1)
+                                                MaterialTheme.typography.titleSmall
+                                            else MaterialTheme.typography.labelLarge,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary)
+                                        is DocxWriter.Block.Para -> Text(blk.text,
+                                            style = MaterialTheme.typography.bodySmall)
+                                        is DocxWriter.Block.Table -> Text(
+                                            blk.rows.joinToString("；") {
+                                                it.joinToString(" ")
+                                            },
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme
+                                                .colorScheme.onSurfaceVariant)
+                                        is DocxWriter.Block.Image -> Text(
+                                            "〔${blk.caption}——见上方图表预览，" +
+                                                "随 DOCX 导出〕",
+                                            style = MaterialTheme.typography.labelSmall,
+                                            color = MaterialTheme
+                                                .colorScheme.onSurfaceVariant)
+                                    }
                                 }
                             }
                         }

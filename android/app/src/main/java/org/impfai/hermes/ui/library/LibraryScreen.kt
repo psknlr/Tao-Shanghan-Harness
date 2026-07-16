@@ -222,11 +222,20 @@ private fun Bookshelf(
         verticalArrangement = Arrangement.spacedBy(10.dp),
     ) {
         item {
+            Text(
+                "中医笈成全库 · 共 ${state.nBooks} 部 · 收藏 ${state.favorites.size}",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(top = 10.dp),
+            )
+        }
+        item {
             OutlinedTextField(
                 value = state.query,
                 onValueChange = vm::setQuery,
-                modifier = Modifier.fillMaxWidth().padding(top = 8.dp),
-                placeholder = { Text("书名/作者/朝代/分类（${state.nBooks} 部）") },
+                modifier = Modifier.fillMaxWidth(),
+                placeholder = { Text("检索书名 / 作者 / 朝代 / 分类（简繁均可）") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
                 keyboardActions = KeyboardActions(onSearch = { vm.search() }),

@@ -107,7 +107,7 @@ fun ClauseScreen(
     onOpenClause: (String) -> Unit,
     onBack: () -> Unit,
     onAskAi: (question: String) -> Unit = {},
-    onOpenBook: (bookTitle: String) -> Unit = {},
+    onOpenBook: (bookTitle: String, locate: String) -> Unit = { _, _ -> },
 ) {
     val container = rememberContainer()
     val vm: ClauseViewModel = viewModel(key = "clause-$clauseRef") {
@@ -349,7 +349,9 @@ fun ClauseScreen(
                                 //（v1.4 修復：此前誤當條文 id 導致 NOT_FOUND）
                                 target.contains(":") -> TextButton(
                                     onClick = {
-                                        onOpenBook(target.substringBefore(":"))
+                                        // 帶條文文字定位：開卷直達包含段落
+                                        onOpenBook(target.substringBefore(":"),
+                                            d.text.take(14))
                                     }) {
                                     Text(("${rel.relationType} → " +
                                         "${target.substringBefore(":")} 开卷 ▸")

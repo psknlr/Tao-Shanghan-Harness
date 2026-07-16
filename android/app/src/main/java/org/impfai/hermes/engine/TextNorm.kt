@@ -97,6 +97,11 @@ object TextNorm {
 
     fun normalizeQuery(text: String): String = foldVariants(s2t(text.trim()))
 
+    /** 規範比對空間（v1.4+）：簡體+異體歸一+去空白——簡繁任意輸入的
+     *  逐字包含匹配統一走這裡（檢索框/溯源/定位開卷共用）。 */
+    fun canon(text: String): String =
+        t2s(foldVariants(s2t(text))).replace(Regex("\\s+"), "")
+
     private fun isCjk(c: Char): Boolean = c.code in 0x3400..0x9FFF
 
     fun cjkChars(text: String): List<Char> = text.filter { isCjk(it) }.toList()

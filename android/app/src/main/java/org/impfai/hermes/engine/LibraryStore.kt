@@ -65,6 +65,8 @@ class LibraryStore(private val context: Context) {
     @Volatile private var catalog: Catalog? = null
     private var byId: Map<String, Unit_> = emptyMap()
     private var charIndex: Map<String, List<Int>> = emptyMap()
+    // 編目檢索的規範化緩存（v1.5：修復簡體輸入檢索不到繁體書名）
+    private var canonIndex: List<Triple<String, String, Unit_>> = emptyList()
 
     private val metaBlock = Regex("<book>[\\s\\S]*?</book>")
     private val heading = Regex("^(={2,6})\\s*(.+?)\\s*\\1\\s*$")
@@ -86,6 +88,9 @@ class LibraryStore(private val context: Context) {
                     json.decodeFromStream<Catalog>(it)
                 }
                 byId = catalog!!.units.associateBy { it.id }
+                canonIndex = catalog!!.units.map {
+                    Triple(TextNorm.canon(it.title), TextNorm.canon(it.author), it)
+                }
             }
         }
         return true
@@ -114,21 +119,24 @@ class LibraryStore(private val context: Context) {
         return Triple(c.nBooks, c.nUnits, c.categories)
     }
 
-    /** 編目檢索（同 Library.search：title 命中 3/2 分，author/朝代/分類 1 分）。 */
+    /** 編目檢索：書名/作者/朝代/分類——規範空間比對（v1.5 修復：
+     *  簡體輸入「伤寒」此前匹配不到繁體書名「傷寒論」）。
+     *  排序同原始 Library.search：title 3/2 分 > author/朝代/分類 1 分。 */
     suspend fun searchCatalog(query: String, category: String = "",
-                              limit: Int = 40): List<Unit_> {
+                              limit: Int = 60): List<Unit_> {
         if (!ensureCatalog()) return emptyList()
-        val q = TextNorm.foldVariants(query.trim())
+        val q = TextNorm.canon(query.trim())
+        val cat = TextNorm.canon(category)
         val hits = ArrayList<Pair<Int, Unit_>>()
-        for (u in catalog!!.units) {
-            if (category.isNotBlank() && !u.category.contains(category)) continue
-            val title = TextNorm.foldVariants(u.title)
-            val author = TextNorm.foldVariants(u.author)
+        for ((cTitle, cAuthor, u) in canonIndex) {
+            if (cat.isNotBlank() &&
+                !TextNorm.canon(u.category).contains(cat)) continue
             val score = when {
-                q.isNotBlank() && title.contains(q) ->
+                q.isNotBlank() && cTitle.contains(q) ->
                     if (u.parent.isBlank()) 3 else 2
-                q.isNotBlank() && (author.contains(q) || q == u.dynasty ||
-                    u.category.contains(q)) -> 1
+                q.isNotBlank() && (cAuthor.contains(q) ||
+                    TextNorm.canon(u.dynasty).contains(q) ||
+                    TextNorm.canon(u.category).contains(q)) -> 1
                 q.isBlank() -> 1
                 else -> continue
             }
@@ -140,6 +148,52 @@ class LibraryStore(private val context: Context) {
                 .thenBy { it.second.id })
             .take(limit).map { it.second }
     }
+
+    data class Located(val section: String, val paraIndex: Int)
+
+    /**
+     * 定位包含指定文字的章節與段序（條文關係開卷直達；v1.5 #1）。
+     * 段序口徑與 ReaderViewModel.splitParas 一致：本章節內非空行序，
+     * 章節標題行本身計為第 0 段。
+     */
+    suspend fun locate(bookId: String, needleRaw: String): Located? =
+        withContext(Dispatchers.IO) {
+            ensureCatalog()
+            val u = byId[bookId] ?: return@withContext null
+            val needle = TextNorm.canon(needleRaw)
+            if (needle.isBlank()) return@withContext null
+            var section = ""
+            var paraInSection = 0
+            for (name in u.files) {
+                try {
+                    context.assets.open("library/books/${u.id}/$name")
+                        .bufferedReader(Charsets.UTF_8).useLines { lines ->
+                            var inMeta = false
+                            for (raw in lines) {
+                                val line = raw.trim()
+                                if (line == "<book>") { inMeta = true; continue }
+                                if (line == "</book>") { inMeta = false; continue }
+                                if (inMeta || line.isEmpty()) continue
+                                val h = heading.matchEntire(line)
+                                if (h != null) {
+                                    section = h.groupValues[2]
+                                    paraInSection = 0
+                                }
+                                if (TextNorm.canon(line).contains(needle)) {
+                                    return@useLines
+                                }
+                                paraInSection++
+                            }
+                            paraInSection = -1     // 本文件未命中
+                        }
+                    if (paraInSection >= 0) {
+                        return@withContext Located(section, paraInSection)
+                    }
+                    paraInSection = 0
+                } catch (_: Exception) { }
+            }
+            null
+        }
 
     fun unit(id: String): Unit_? = byId[id]
 

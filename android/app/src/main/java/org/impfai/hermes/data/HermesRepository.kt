@@ -210,9 +210,90 @@ class HermesRepository(
         5. 使用与提问相同的语言（简体/繁体）回答，保持简洁。
     """.trimIndent()
 
+    /** 直連流式事件：步驟時間線 + 增量文本（智能體頁可視化過程）。 */
+    sealed interface StreamEvent {
+        data class Step(val label: String) : StreamEvent
+        data class Delta(val text: String) : StreamEvent
+    }
+
     /**
-     * VIP 直連模式。密鑰僅存本機、只發送至用戶配置的模型服務商；
-     * 引用經本地核驗（弱於服務端全鏈路閘門，UI 標注「本地核驗」）。
+     * VIP 直連流式管線：①本地 BM25 取證（步驟含命中條文號）
+     * ② 模型流式生成（增量回調）③ 本地 CitationGuard 核驗。
+     * 返回帶核驗報告的最終 AgentData。
+     */
+    suspend fun directAgentStream(
+        question: String,
+        onEvent: (StreamEvent) -> Unit,
+    ): RepoResult<AgentData> {
+        val s = settingsRepo.current()
+        if (s.llmApiKey.isBlank()) {
+            return RepoResult.Error("NO_KEY",
+                "未配置模型 API Key，请在“我的 → 直连大模型”中设置")
+        }
+        localStore.ensureLoaded()
+        onEvent(StreamEvent.Step("① 本地检索证据条文（BM25 + 简繁归一）…"))
+        val hits = localStore.search(question, topK = 6)
+        val evidenceIds = hits.map { it.clauseId }.toSet()
+        onEvent(StreamEvent.Step(
+            if (hits.isEmpty()) "① 本地检索：无命中（模型将被要求声明证据不足）"
+            else "① 检得 ${hits.size} 条：" + hits.joinToString("、") {
+                it.clauseNumber?.let { n -> "第${n}条" } ?: it.clauseId
+            }))
+        val evidenceBlock = if (hits.isEmpty()) "（本地检索无命中）"
+        else hits.joinToString("\n") { "[${it.clauseId}] ${it.text}" }
+        val model = s.llmModel.ifBlank { DirectLlm.defaultModel(s.llmProvider) }
+        onEvent(StreamEvent.Step("② 调用 $model 流式生成（仅限所给证据作答）…"))
+        val answer = DirectLlm.completeStream(
+            provider = s.llmProvider, apiKey = s.llmApiKey,
+            baseUrl = s.llmBaseUrl, model = s.llmModel,
+            system = directSystemPrompt,
+            user = "【证据条文】\n$evidenceBlock\n\n【问题】\n$question",
+            onDelta = { onEvent(StreamEvent.Delta(it)) },
+        ).getOrElse { e ->
+            return RepoResult.Error("LLM_ERROR", e.message ?: "模型调用失败")
+        }
+        onEvent(StreamEvent.Step("③ 本地 CitationGuard 核验引用…"))
+        return RepoResult.Data(
+            buildDirectAgentData(question, answer, hits, evidenceIds, model),
+            ResultOrigin.SERVER)
+    }
+
+    private fun buildDirectAgentData(
+        question: String, answer: String,
+        hits: List<SearchHit>, evidenceIds: Set<String>, model: String,
+    ): AgentData {
+        val cited = reClauseId.findAll(answer).map { it.value }
+            .distinct().toList()
+        val verified = ArrayList<String>()
+        val outside = ArrayList<String>()
+        val unsupported = ArrayList<String>()
+        for (id in cited) {
+            when {
+                id in evidenceIds -> verified.add(id)
+                localStore.byId(id) != null -> outside.add(id)
+                else -> unsupported.add(id)
+            }
+        }
+        val report = CitationReport(
+            cited = cited, verified = verified, unsupported = unsupported,
+            outsideEvidence = outside,
+            hasAnyCitation = cited.isNotEmpty(),
+            ok = cited.isNotEmpty() && unsupported.isEmpty() &&
+                outside.isEmpty(),
+        )
+        return AgentData(
+            question = question, answer = answer, backend = "直连·$model",
+            toolsUsed = listOf("local_bm25_rag", "local_citation_guard"),
+            evidenceClauseIds = hits.map { it.clauseId },
+            citationReport = report,
+            safetyNotice = "直连模式：回答由第三方大模型生成，引用仅经本地核验" +
+                "（弱于服务端全链路证据闸门）；内容供文献学习参考，" +
+                "不构成诊断或治疗建议。",
+        )
+    }
+
+    /**
+     * VIP 直連模式（非流式，論文潤色等內部使用）。密鑰僅存本機。
      */
     suspend fun directAgent(question: String): RepoResult<AgentData> {
         val s = settingsRepo.current()
@@ -235,41 +316,10 @@ class HermesRepository(
             return RepoResult.Error("LLM_ERROR", e.message ?: "模型调用失败")
         }
 
-        // 本地 CitationGuard：引用必須指向本輪提供的證據；引用了庫內
-        // 其他條文記 outside_evidence（△），庫外 ID 記 unsupported（×）
-        val cited = reClauseId.findAll(answer).map { it.value }.distinct().toList()
-        val verified = ArrayList<String>()
-        val outside = ArrayList<String>()
-        val unsupported = ArrayList<String>()
-        for (id in cited) {
-            when {
-                id in evidenceIds -> verified.add(id)
-                localStore.byId(id) != null -> outside.add(id)
-                else -> unsupported.add(id)
-            }
-        }
-        val report = CitationReport(
-            cited = cited, verified = verified, unsupported = unsupported,
-            outsideEvidence = outside,
-            hasAnyCitation = cited.isNotEmpty(),
-            ok = cited.isNotEmpty() && unsupported.isEmpty() && outside.isEmpty(),
-        )
         val model = s.llmModel.ifBlank { DirectLlm.defaultModel(s.llmProvider) }
         return RepoResult.Data(
-            AgentData(
-                question = question,
-                answer = answer,
-                backend = "直连·$model",
-                toolsUsed = listOf("local_bm25_rag", "local_citation_guard"),
-                evidenceClauseIds = hits.map { it.clauseId },
-                citationReport = report,
-                safetyNotice = "直连模式：回答由第三方大模型生成，引用仅经本地核验" +
-                    "（弱于服务端全链路证据闸门）；内容供文献学习参考，" +
-                    "不构成诊断或治疗建议。",
-            ),
-            ResultOrigin.SERVER,
-            notice = null,
-        )
+            buildDirectAgentData(question, answer, hits, evidenceIds, model),
+            ResultOrigin.SERVER)
     }
 
     /** 首頁/設置頁狀態卡：health + whoami + content manifest。 */
