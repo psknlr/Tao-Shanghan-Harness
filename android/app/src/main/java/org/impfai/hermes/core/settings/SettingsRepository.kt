@@ -33,6 +33,8 @@ data class AppSettings(
     val llmApiKey: String = "",
     val llmBaseUrl: String = "",
     val llmModel: String = "",
+    // 最大輸出 tokens（v1.6：MiniMax-M3 等長答截斷修復；上限交給服務商）
+    val llmMaxTokens: Int = 8192,
     // —— 古籍閱讀器（v1.4 Kindle 式體驗）——
     val readerFontSize: Int = 18,           // sp，14..26
     val readerTheme: String = "paper",      // paper | white | green | night
@@ -64,6 +66,8 @@ class SettingsRepository(private val context: Context) {
         val LLM_API_KEY = stringPreferencesKey("llm_api_key")
         val LLM_BASE_URL = stringPreferencesKey("llm_base_url")
         val LLM_MODEL = stringPreferencesKey("llm_model")
+        val LLM_MAX_TOKENS = androidx.datastore.preferences.core
+            .intPreferencesKey("llm_max_tokens")
         val READER_FONT = androidx.datastore.preferences.core
             .intPreferencesKey("reader_font_size")
         val READER_THEME = stringPreferencesKey("reader_theme")
@@ -83,6 +87,7 @@ class SettingsRepository(private val context: Context) {
             llmApiKey = p[Keys.LLM_API_KEY] ?: "",
             llmBaseUrl = p[Keys.LLM_BASE_URL] ?: "",
             llmModel = p[Keys.LLM_MODEL] ?: "",
+            llmMaxTokens = p[Keys.LLM_MAX_TOKENS] ?: 8192,
             readerFontSize = p[Keys.READER_FONT] ?: 18,
             readerTheme = p[Keys.READER_THEME] ?: "paper",
             libraryFavorites = p[Keys.LIB_FAVORITES] ?: emptySet(),
@@ -109,12 +114,14 @@ class SettingsRepository(private val context: Context) {
         context.dataStore.edit { it[Keys.OFFLINE_ONLY] = on }
     }
 
-    suspend fun setLlm(provider: String, apiKey: String, baseUrl: String, model: String) {
+    suspend fun setLlm(provider: String, apiKey: String, baseUrl: String,
+                       model: String, maxTokens: Int = 8192) {
         context.dataStore.edit { p ->
             p[Keys.LLM_PROVIDER] = provider
             p[Keys.LLM_API_KEY] = apiKey.trim()
             p[Keys.LLM_BASE_URL] = baseUrl.trim()
             p[Keys.LLM_MODEL] = model.trim()
+            p[Keys.LLM_MAX_TOKENS] = maxTokens.coerceIn(1024, 65536)
         }
     }
 

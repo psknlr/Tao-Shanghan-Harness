@@ -3,25 +3,34 @@ package org.impfai.hermes.ui.library
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGesturesAfterLongPress
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.pager.HorizontalPager
+import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Bookmark
+import androidx.compose.material.icons.filled.BookmarkBorder
 import androidx.compose.material.icons.filled.Bookmarks
+import androidx.compose.material.icons.filled.ChevronLeft
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material3.Button
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -32,10 +41,10 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Slider
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
@@ -49,32 +58,44 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.PlatformTextStyle
 import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.TextLayoutResult
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.TextFieldValue
+import androidx.compose.ui.text.rememberTextMeasurer
+import androidx.compose.ui.text.style.LineHeightStyle
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextIndent
+import androidx.compose.ui.text.style.TextDecoration
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.yield
 import org.impfai.hermes.AppContainer
 import org.impfai.hermes.engine.AnnotationStore
 import org.impfai.hermes.engine.LibraryStore
 import org.impfai.hermes.ui.common.NoticeBar
 import org.impfai.hermes.ui.common.display
 import org.impfai.hermes.ui.common.rememberContainer
+import kotlin.math.roundToInt
 
 /** 閱讀主題（Kindle 式）：紙感米黃 / 純白 / 豆沙綠 / 夜間。 */
 data class ReaderTheme(
@@ -92,6 +113,46 @@ val READER_THEMES = listOf(
     ReaderTheme("night", "夜间", Color(0xFF15130F), Color(0xFFD8CFBE),
         Color(0x40E8C96A), Color(0xFFB59A55)),
 )
+
+/** 首行縮進兩全角空格：縮進計入顯示座標，批注偏移換算時減去。 */
+private const val INDENT = "　　"
+
+/** 段與段之間的行間距（分頁計算與渲染共用同一常量）。 */
+private val CHUNK_SPACING = 6.dp
+
+/** 一頁中的文本塊：某段顯示文本（含縮進）的行級切片。 */
+data class PageChunk(
+    val paraIndex: Int,
+    val text: String,
+    val dispStart: Int,
+    val paraStart: Boolean,
+)
+
+data class ReaderPage(val chunks: List<PageChunk>)
+
+/** 拖曳選中：段 + 顯示座標區間（含首行縮進偏移）。 */
+data class SelInfo(
+    val para: ReaderViewModel.Para,
+    val dispStart: Int,
+    val dispEnd: Int,
+)
+
+/** 批注/劃線在顯示文本（含縮進）中的區間。 */
+private fun annDispRange(
+    a: AnnotationStore.Annotation, para: ReaderViewModel.Para,
+): IntRange {
+    val s = if (a.selStart >= 0) a.selStart + INDENT.length else 0
+    val e = if (a.selEnd > 0) a.selEnd + INDENT.length
+    else para.text.length + INDENT.length
+    return s until e
+}
+
+/** 顯示座標 → 原文座標（去縮進、夾取到段長）。 */
+private fun SelInfo.origRange(): Pair<Int, Int> {
+    val s = (dispStart - INDENT.length).coerceIn(0, para.text.length)
+    val e = (dispEnd - INDENT.length).coerceIn(0, para.text.length)
+    return s to e
+}
 
 class ReaderViewModel(
     private val container: AppContainer,
@@ -116,11 +177,16 @@ class ReaderViewModel(
         val themeKey: String = "paper",
         val simplified: Boolean = true,
         val annotations: List<AnnotationStore.Annotation> = emptyList(),
-        val targetPara: Int? = null,     // 定位開卷的目標段（滾動+閃亮）
+        val targetPara: Int? = null,     // 定位開卷的目標段（跳頁+閃亮）
     )
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
+
+    companion object {
+        // v1.6 翻頁式閱讀：整章一次載入分頁（超長章節分窗續載）
+        private const val WINDOW = 400_000
+    }
 
     init {
         viewModelScope.launch {
@@ -156,19 +222,13 @@ class ReaderViewModel(
     fun open(section: String, target: Int? = null) {
         val u = _state.value.unit ?: return
         viewModelScope.launch {
-            val r = container.libraryStore.read(u.id, section, 0)
+            val r = container.libraryStore.read(u.id, section, 0,
+                maxChars = WINDOW)
             _state.value = _state.value.copy(
                 loaded = true, section = section,
                 paras = splitParas(r.text, 0),
-                truncated = r.truncated, offset = 4000,
+                truncated = r.truncated, offset = WINDOW,
                 totalChars = r.total, targetPara = target)
-            // 目標段在後續窗口：自動續載直到可見（上限 20 窗）
-            var guard = 0
-            while (target != null && _state.value.paras.size <= target &&
-                _state.value.truncated && guard < 20
-            ) {
-                loadMoreInternal(); guard++
-            }
         }
     }
 
@@ -176,16 +236,23 @@ class ReaderViewModel(
         _state.value = _state.value.copy(targetPara = null)
     }
 
-    fun loadMore() = viewModelScope.launch { loadMoreInternal() }
+    private var loadingMore = false
 
-    private suspend fun loadMoreInternal() {
-        val u = _state.value.unit ?: return
-        val st = _state.value
-        val r = container.libraryStore.read(u.id, st.section, st.offset)
-        _state.value = st.copy(
-            paras = st.paras + splitParas(r.text, st.paras.size),
-            truncated = r.truncated, offset = st.offset + 4000,
-            totalChars = r.total)
+    fun loadMore() = viewModelScope.launch {
+        if (loadingMore) return@launch
+        loadingMore = true
+        try {
+            val u = _state.value.unit ?: return@launch
+            val st = _state.value
+            val r = container.libraryStore.read(u.id, st.section, st.offset,
+                maxChars = WINDOW)
+            _state.value = st.copy(
+                paras = st.paras + splitParas(r.text, st.paras.size),
+                truncated = r.truncated, offset = st.offset + WINDOW,
+                totalChars = r.total)
+        } finally {
+            loadingMore = false
+        }
     }
 
     private fun splitParas(text: String, baseIndex: Int): List<Para> =
@@ -204,6 +271,14 @@ class ReaderViewModel(
         viewModelScope.launch {
             container.settings.setReaderPrefs(theme = key)
             _state.value = _state.value.copy(themeKey = key)
+        }
+    }
+
+    /** 簡繁切換（v1.6 #4）：全局顯示層設置，原文始終以繁體存儲。 */
+    fun setSimplified(on: Boolean) {
+        viewModelScope.launch {
+            container.settings.setSimplifiedDisplay(on)
+            _state.value = _state.value.copy(simplified = on)
         }
     }
 
@@ -251,21 +326,37 @@ fun ReaderScreen(
     val theme = READER_THEMES.firstOrNull { it.key == state.themeKey }
         ?: READER_THEMES.first()
     val clipboard = LocalClipboardManager.current
-    val listState = rememberLazyListState()
+
+    // —— 翻頁狀態（v1.6 #3：左右滑動翻頁）——
+    var pages by remember { mutableStateOf(listOf<ReaderPage>()) }
+    var paginating by remember { mutableStateOf(false) }
+    var contentKey by remember { mutableStateOf("") }
+    val pagerState = rememberPagerState { pages.size.coerceAtLeast(1) }
+
+    // —— 選中/批注狀態（v1.6 #3：原文長按拖曳劃線）——
+    var sel by remember { mutableStateOf<SelInfo?>(null) }
+    var noteFor by remember { mutableStateOf<SelInfo?>(null) }
+    var noteDraft by remember { mutableStateOf("") }
+    var viewNote by remember {
+        mutableStateOf<AnnotationStore.Annotation?>(null)
+    }
+    var flashPara by remember { mutableStateOf<Int?>(null) }
 
     var showToc by remember { mutableStateOf(false) }
     var showNotes by remember { mutableStateOf(false) }
     var showAa by remember { mutableStateOf(false) }
-    var menuPara by remember { mutableStateOf<ReaderViewModel.Para?>(null) }
-    var selectPara by remember { mutableStateOf<ReaderViewModel.Para?>(null) }
-    var noteDraft by remember { mutableStateOf("") }
-    var flashPara by remember { mutableStateOf<Int?>(null) }
 
-    // 定位開卷：滾動到目標段並短暫高亮
-    LaunchedEffect(state.targetPara, state.paras.size) {
+    // 翻頁即取消選中
+    LaunchedEffect(pagerState.currentPage) { sel = null }
+
+    // 定位開卷：跳到包含目標段的頁並短暫高亮
+    LaunchedEffect(state.targetPara, pages.size) {
         val t = state.targetPara ?: return@LaunchedEffect
-        if (state.paras.size > t) {
-            listState.animateScrollToItem(t + 1)   // +1：首項為章節題
+        val idx = pages.indexOfFirst { p ->
+            p.chunks.any { it.paraIndex == t }
+        }
+        if (idx >= 0) {
+            pagerState.scrollToPage(idx)
             flashPara = t
             vm.clearTarget()
             delay(2200)
@@ -273,9 +364,25 @@ fun ReaderScreen(
         }
     }
 
+    // 超長章節：接近末頁時自動續載下一窗（無感續讀）
+    LaunchedEffect(pagerState.currentPage, pages.size, state.truncated,
+        paginating) {
+        if (state.truncated && !paginating && pages.isNotEmpty() &&
+            pagerState.currentPage >= pages.size - 3
+        ) {
+            vm.loadMore()
+        }
+    }
+
     Scaffold(
         containerColor = theme.bg,
         topBar = {
+            val curPara = pages.getOrNull(pagerState.currentPage)
+                ?.chunks?.firstOrNull()?.paraIndex
+            val pageBookmark = state.annotations.firstOrNull {
+                it.kind == AnnotationStore.Kind.BOOKMARK.name &&
+                    it.section == state.section && it.paraIndex == curPara
+            }
             TopAppBar(
                 colors = TopAppBarDefaults.topAppBarColors(
                     containerColor = theme.bg,
@@ -296,6 +403,19 @@ fun ReaderScreen(
                     }
                 },
                 actions = {
+                    IconButton(onClick = {
+                        val p = curPara?.let { state.paras.getOrNull(it) }
+                            ?: return@IconButton
+                        if (pageBookmark != null) {
+                            vm.removeAnnotation(pageBookmark.id)
+                        } else {
+                            vm.annotate(p, AnnotationStore.Kind.BOOKMARK)
+                        }
+                    }) {
+                        Icon(if (pageBookmark != null) Icons.Filled.Bookmark
+                        else Icons.Filled.BookmarkBorder,
+                            contentDescription = "书签")
+                    }
                     IconButton(onClick = { showToc = true }) {
                         Icon(Icons.AutoMirrored.Filled.List,
                             contentDescription = "目录")
@@ -310,29 +430,71 @@ fun ReaderScreen(
             )
         },
         bottomBar = {
-            // 閱讀進度：細線 + 章節/百分比（Kindle 式頁脚）
-            if (state.loaded && !state.missing && state.totalChars > 0) {
+            // 頁脚：進度細線 + 章節 + 第N/M頁（v1.6 頁式進度）
+            if (state.loaded && !state.missing) {
                 Column(Modifier.background(theme.bg)) {
-                    val pct = ((state.offset - 4000 + state.paras
-                        .sumOf { it.text.length })
-                        .coerceAtMost(state.totalChars).toFloat() /
-                        state.totalChars).coerceIn(0f, 1f)
+                    val total = pages.size.coerceAtLeast(1)
+                    val cur = pagerState.currentPage.coerceIn(0, total - 1)
                     LinearProgressIndicator(
-                        progress = { pct },
+                        progress = { (cur + 1f) / total },
                         modifier = Modifier.fillMaxWidth().height(2.dp),
                         color = theme.accent,
                         trackColor = theme.fg.copy(alpha = 0.08f),
                     )
-                    Row(Modifier.fillMaxWidth()
-                        .padding(horizontal = 20.dp, vertical = 6.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        if (state.toc.isNotEmpty()) {
+                            val tocIdx = state.toc.indexOfFirst {
+                                it.title == state.section
+                            }
+                            IconButton(
+                                onClick = {
+                                    if (tocIdx > 0) {
+                                        vm.open(state.toc[tocIdx - 1].title)
+                                    }
+                                },
+                                enabled = tocIdx > 0,
+                                modifier = Modifier.size(28.dp),
+                            ) {
+                                Icon(Icons.Filled.ChevronLeft, "上一章",
+                                    tint = theme.fg.copy(
+                                        alpha = if (tocIdx > 0) 0.6f else 0.2f))
+                            }
+                            Spacer(Modifier.size(4.dp))
+                        }
                         Text(state.section.ifBlank { "全文" }
                             .display(state.simplified),
                             style = MaterialTheme.typography.labelSmall,
                             color = theme.fg.copy(alpha = 0.5f),
                             modifier = Modifier.weight(1f), maxLines = 1)
-                        Text("${(pct * 100).toInt()}%",
+                        Text(
+                            if (paginating) "排版中 · 第 ${cur + 1}/$total 页"
+                            else "第 ${cur + 1}/$total 页",
                             style = MaterialTheme.typography.labelSmall,
-                            color = theme.fg.copy(alpha = 0.5f))
+                            color = theme.fg.copy(alpha = 0.55f))
+                        if (state.toc.isNotEmpty()) {
+                            val tocIdx = state.toc.indexOfFirst {
+                                it.title == state.section
+                            }
+                            val hasNext = tocIdx < state.toc.size - 1
+                            Spacer(Modifier.size(4.dp))
+                            IconButton(
+                                onClick = {
+                                    if (hasNext) {
+                                        vm.open(state.toc[tocIdx + 1].title)
+                                    }
+                                },
+                                enabled = hasNext,
+                                modifier = Modifier.size(28.dp),
+                            ) {
+                                Icon(Icons.Filled.ChevronRight, "下一章",
+                                    tint = theme.fg.copy(
+                                        alpha = if (hasNext) 0.6f else 0.2f))
+                            }
+                        }
                     }
                 }
             }
@@ -357,154 +519,273 @@ fun ReaderScreen(
             .filter { it.section == state.section }
             .groupBy { it.paraIndex }
 
-        LazyColumn(
-            state = listState,
-            modifier = Modifier.fillMaxSize().padding(padding)
-                .background(theme.bg).padding(horizontal = 22.dp),
-            verticalArrangement = Arrangement.spacedBy(
-                (state.fontSize * 0.7f).dp),
-        ) {
-            // 章節題：居中大字 + 紋樣分隔（頂級書卷排版）
-            item {
-                Column(Modifier.fillMaxWidth().padding(top = 18.dp,
-                    bottom = 6.dp),
-                    horizontalAlignment = Alignment.CenterHorizontally) {
-                    Text(
-                        state.section.ifBlank {
-                            state.unit?.title ?: ""
-                        }.display(state.simplified),
+        Box(Modifier.fillMaxSize().padding(padding).background(theme.bg)) {
+            BoxWithConstraints(Modifier.fillMaxSize()) {
+                val density = LocalDensity.current
+                val measurer = rememberTextMeasurer()
+                // 分頁與渲染必須使用同一 TextStyle（行高固定、去字體内邊距，
+                // 保證「行數 × 行高」即塊高，逐行切片零誤差）
+                val bodyStyle = remember(state.fontSize, theme) {
+                    TextStyle(
+                        color = theme.fg,
+                        fontSize = state.fontSize.sp,
+                        lineHeight = (state.fontSize * 1.85f).sp,
+                        fontFamily = FontFamily.Serif,
+                        textAlign = TextAlign.Justify,
+                        lineHeightStyle = LineHeightStyle(
+                            alignment = LineHeightStyle.Alignment.Center,
+                            trim = LineHeightStyle.Trim.None,
+                        ),
+                        platformStyle = PlatformTextStyle(
+                            includeFontPadding = false),
+                    )
+                }
+                val headerStyle = remember(state.fontSize, theme) {
+                    TextStyle(
+                        color = theme.fg,
                         fontSize = (state.fontSize + 4).sp,
                         lineHeight = ((state.fontSize + 4) * 1.5f).sp,
                         fontFamily = FontFamily.Serif,
                         fontWeight = FontWeight.Bold,
-                        color = theme.fg,
                         textAlign = TextAlign.Center,
+                        lineHeightStyle = LineHeightStyle(
+                            alignment = LineHeightStyle.Alignment.Center,
+                            trim = LineHeightStyle.Trim.None,
+                        ),
+                        platformStyle = PlatformTextStyle(
+                            includeFontPadding = false),
                     )
-                    Row(verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(top = 10.dp)) {
-                        HorizontalDivider(Modifier.weight(1f),
-                            color = theme.accent.copy(alpha = 0.35f))
-                        Text("  ❦  ", color = theme.accent, fontSize = 14.sp)
-                        HorizontalDivider(Modifier.weight(1f),
-                            color = theme.accent.copy(alpha = 0.35f))
+                }
+                val lineHeightPx = with(density) {
+                    (state.fontSize * 1.85f).sp.toPx()
+                }
+                val spacingPx = with(density) { CHUNK_SPACING.toPx() }
+                val contentWidthPx = (constraints.maxWidth -
+                    with(density) { 44.dp.roundToPx() }).coerceAtLeast(64)
+                val pageHeightPx = constraints.maxHeight -
+                    with(density) { 24.dp.toPx() } - 6f
+                val headerTitle = state.section.ifBlank {
+                    state.unit?.title ?: ""
+                }.display(state.simplified)
+
+                // —— 分頁排版（後台增量構建，先出前頁後出全書）——
+                LaunchedEffect(state.paras, state.fontSize, state.simplified,
+                    contentWidthPx, pageHeightPx.roundToInt(),
+                    lineHeightPx.roundToInt()) {
+                    if (state.paras.isEmpty()) {
+                        pages = emptyList()
+                        return@LaunchedEffect
+                    }
+                    val newKey = "${state.unit?.id}|${state.section}"
+                    val anchor = if (newKey == contentKey) {
+                        pages.getOrNull(pagerState.currentPage)
+                            ?.chunks?.firstOrNull()?.paraIndex
+                    } else null
+                    contentKey = newKey
+                    paginating = true
+                    val paras = state.paras
+                    val simplified = state.simplified
+                    withContext(Dispatchers.Default) {
+                        val headerLayout = measurer.measure(
+                            AnnotatedString(headerTitle), style = headerStyle,
+                            constraints = Constraints(
+                                maxWidth = contentWidthPx))
+                        val headerPx = headerLayout.size.height +
+                            with(density) { 64.dp.toPx() }   // 18+10+22+14
+                        val built = ArrayList<ReaderPage>()
+                        var cur = ArrayList<PageChunk>()
+                        var used = 0f
+                        var lastEmit = 0
+                        for (para in paras) {
+                            yield()
+                            val disp = INDENT +
+                                para.text.display(simplified)
+                            val layout = measurer.measure(
+                                AnnotatedString(disp), style = bodyStyle,
+                                constraints = Constraints(
+                                    maxWidth = contentWidthPx))
+                            var line = 0
+                            while (line < layout.lineCount) {
+                                val cap = if (built.isEmpty())
+                                    pageHeightPx - headerPx else pageHeightPx
+                                val gap = if (cur.isEmpty()) 0f else spacingPx
+                                var fit = ((cap - used - gap) /
+                                    lineHeightPx).toInt()
+                                if (fit < 1) {
+                                    if (cur.isEmpty()) {
+                                        fit = 1   // 防零容量死循環（極端小屏）
+                                    } else {
+                                        built.add(ReaderPage(cur))
+                                        cur = ArrayList(); used = 0f
+                                        if (built.size - lastEmit >= 6) {
+                                            pages = built.toList()
+                                            lastEmit = built.size
+                                        }
+                                        continue
+                                    }
+                                }
+                                val k = minOf(fit, layout.lineCount - line)
+                                val cs = layout.getLineStart(line)
+                                val ce = layout.getLineEnd(line + k - 1)
+                                cur.add(PageChunk(para.index,
+                                    disp.substring(cs, ce), cs, line == 0))
+                                used += gap + k * lineHeightPx
+                                line += k
+                            }
+                        }
+                        if (cur.isNotEmpty()) built.add(ReaderPage(cur))
+                        pages = built.toList()
+                    }
+                    paginating = false
+                    // 字號/簡繁/續載重排後回到原閱讀位置
+                    if (anchor != null && anchor > 0 &&
+                        state.targetPara == null
+                    ) {
+                        val idx = pages.indexOfFirst { p ->
+                            p.chunks.any { it.paraIndex == anchor }
+                        }
+                        if (idx >= 0) pagerState.scrollToPage(idx)
+                    }
+                }
+
+                when {
+                    pages.isEmpty() && paginating -> Column(
+                        Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
+                        CircularProgressIndicator(color = theme.accent)
+                        Spacer(Modifier.height(10.dp))
+                        Text("排版中…", color = theme.fg.copy(alpha = 0.5f),
+                            style = MaterialTheme.typography.labelMedium)
+                    }
+                    pages.isEmpty() -> Text("（本章无内容）",
+                        color = theme.fg.copy(alpha = 0.5f),
+                        modifier = Modifier.align(Alignment.Center))
+                    else -> HorizontalPager(
+                        state = pagerState,
+                        modifier = Modifier.fillMaxSize(),
+                        beyondViewportPageCount = 1,
+                    ) { pageIdx ->
+                        val page = pages.getOrNull(pageIdx)
+                            ?: return@HorizontalPager
+                        PageView(
+                            page = page,
+                            isFirst = pageIdx == 0,
+                            headerTitle = headerTitle,
+                            headerStyle = headerStyle,
+                            theme = theme,
+                            bodyStyle = bodyStyle,
+                            paras = state.paras,
+                            annByPara = annByPara,
+                            sel = sel,
+                            flashPara = flashPara,
+                            onSel = { sel = it },
+                            onViewNote = { viewNote = it },
+                        )
                     }
                 }
             }
-            items(state.paras.size, key = { state.paras[it].index }) { i ->
-                val para = state.paras[i]
-                val anns = annByPara[para.index].orEmpty()
-                val flash = flashPara == para.index
-                ParaText(para, anns, theme, state.fontSize,
-                    state.simplified, flash,
-                    onLongPress = { menuPara = para; noteDraft = "" })
-            }
-            if (state.truncated) {
-                item {
-                    OutlinedButton(onClick = vm::loadMore,
-                        modifier = Modifier.fillMaxWidth()) {
-                        Text("继续阅读")
+
+            // —— 浮動操作條：長按拖曳選中後出現（微信讀書式）——
+            sel?.let { s ->
+                val (os, oe) = s.origRange()
+                Surface(
+                    modifier = Modifier.align(Alignment.BottomCenter)
+                        .padding(bottom = 18.dp),
+                    shape = RoundedCornerShape(24.dp),
+                    color = MaterialTheme.colorScheme.surface,
+                    shadowElevation = 8.dp,
+                    tonalElevation = 3.dp,
+                ) {
+                    Row(
+                        Modifier.padding(horizontal = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        TextButton(onClick = {
+                            if (oe > os) {
+                                clipboard.setText(AnnotatedString(
+                                    s.para.text.display(state.simplified)
+                                        .substring(os, oe)))
+                            }
+                            sel = null
+                        }) { Text("复制") }
+                        TextButton(onClick = {
+                            if (oe > os) {
+                                vm.annotate(s.para,
+                                    AnnotationStore.Kind.HIGHLIGHT,
+                                    selStart = os, selEnd = oe)
+                            }
+                            sel = null
+                        }) { Text("🖍 划线") }
+                        TextButton(onClick = {
+                            if (oe > os) {
+                                noteFor = s; noteDraft = ""
+                            }
+                            sel = null
+                        }) { Text("📝 批注") }
+                        TextButton(onClick = { sel = null }) { Text("✕") }
                     }
                 }
-            }
-            item {
-                Text("长按段落：划线 · 批注 · 书签 · 选取字句",
-                    style = MaterialTheme.typography.labelSmall,
-                    color = theme.fg.copy(alpha = 0.4f),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier.fillMaxWidth()
-                        .padding(vertical = 14.dp))
             }
         }
     }
 
-    // —— 段落操作 ——
-    menuPara?.let { para ->
-        ModalBottomSheet(onDismissRequest = { menuPara = null }) {
-            Column(Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text(para.text.take(60) +
-                    if (para.text.length > 60) "…" else "",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(onClick = {
-                        vm.annotate(para, AnnotationStore.Kind.HIGHLIGHT)
-                        menuPara = null
-                    }) { Text("整段划线") }
-                    OutlinedButton(onClick = {
-                        selectPara = para; menuPara = null
-                    }) { Text("选取字句…") }
-                    OutlinedButton(onClick = {
-                        vm.annotate(para, AnnotationStore.Kind.BOOKMARK)
-                        menuPara = null
-                    }) { Text("书签") }
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    OutlinedButton(onClick = {
-                        clipboard.setText(AnnotatedString(para.text))
-                        menuPara = null
-                    }) { Text("复制整段") }
-                }
-                OutlinedTextField(
-                    value = noteDraft, onValueChange = { noteDraft = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("写批注（整段）…") }, maxLines = 3)
-                Button(onClick = {
-                    vm.annotate(para, AnnotationStore.Kind.NOTE, noteDraft)
-                    menuPara = null
-                }, enabled = noteDraft.isNotBlank()) { Text("保存批注") }
-            }
-        }
-    }
-
-    // —— 字句級選取（v1.5 #3）——
-    selectPara?.let { para ->
-        var tfv by remember(para.index) {
-            mutableStateOf(TextFieldValue(para.text))
-        }
-        var selNote by remember(para.index) { mutableStateOf("") }
-        val sel = tfv.selection
-        val hasSel = !sel.collapsed
-        ModalBottomSheet(onDismissRequest = { selectPara = null }) {
-            Column(Modifier.padding(16.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("拖动选择柄选中字句，再划线/批注/复制",
-                    style = MaterialTheme.typography.labelMedium)
-                OutlinedTextField(
-                    value = tfv, onValueChange = { tfv = it },
-                    readOnly = true,
-                    modifier = Modifier.fillMaxWidth(),
-                    textStyle = MaterialTheme.typography.bodyMedium,
-                )
-                if (hasSel) {
-                    Text("已选：「${para.text.substring(
-                        sel.min, sel.max).take(40)}」",
+    // —— 批注輸入（對所選字句）——
+    noteFor?.let { t ->
+        val (os, oe) = t.origRange()
+        AlertDialog(
+            onDismissRequest = { noteFor = null },
+            title = { Text("写批注") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("「" + t.para.text.display(state.simplified)
+                        .substring(os, oe).take(48) +
+                        (if (oe - os > 48) "…" else "") + "」",
                         style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary)
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    OutlinedTextField(
+                        value = noteDraft, onValueChange = { noteDraft = it },
+                        modifier = Modifier.fillMaxWidth(),
+                        placeholder = { Text("批注内容…") }, maxLines = 4)
                 }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Button(enabled = hasSel, onClick = {
-                        vm.annotate(para, AnnotationStore.Kind.HIGHLIGHT,
-                            selStart = sel.min, selEnd = sel.max)
-                        selectPara = null
-                    }) { Text("划线所选") }
-                    OutlinedButton(enabled = hasSel, onClick = {
-                        clipboard.setText(AnnotatedString(
-                            para.text.substring(sel.min, sel.max)))
-                        selectPara = null
-                    }) { Text("复制所选") }
+            },
+            confirmButton = {
+                TextButton(enabled = noteDraft.isNotBlank(), onClick = {
+                    vm.annotate(t.para, AnnotationStore.Kind.NOTE, noteDraft,
+                        selStart = os, selEnd = oe)
+                    noteFor = null; noteDraft = ""
+                }) { Text("保存") }
+            },
+            dismissButton = {
+                TextButton(onClick = { noteFor = null }) { Text("取消") }
+            },
+        )
+    }
+
+    // —— 查看批注（點按帶批注的字句）——
+    viewNote?.let { a ->
+        AlertDialog(
+            onDismissRequest = { viewNote = null },
+            title = { Text("📝 批注") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("「${a.excerpt.display(state.simplified).take(80)}」",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    Text(a.note, style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold)
                 }
-                OutlinedTextField(
-                    value = selNote, onValueChange = { selNote = it },
-                    modifier = Modifier.fillMaxWidth(),
-                    placeholder = { Text("对所选字句写批注…") }, maxLines = 3)
-                Button(enabled = hasSel && selNote.isNotBlank(), onClick = {
-                    vm.annotate(para, AnnotationStore.Kind.NOTE, selNote,
-                        selStart = sel.min, selEnd = sel.max)
-                    selectPara = null
-                }) { Text("保存字句批注") }
-            }
-        }
+            },
+            confirmButton = {
+                TextButton(onClick = { viewNote = null }) { Text("关闭") }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    vm.removeAnnotation(a.id); viewNote = null
+                }) { Text("删除") }
+            },
+        )
     }
 
     // —— 目錄 ——
@@ -580,22 +861,27 @@ fun ReaderScreen(
                     }
                 }
                 if (state.annotations.isEmpty()) {
-                    item { Text("（长按正文段落即可划线、批注、加书签）") }
+                    item { Text("（长按正文并拖动手指即可划线、批注；" +
+                        "顶栏 🔖 一键加书签）") }
                 }
             }
         }
     }
 
-    // —— Aa：字號與主題 ——
+    // —— Aa：字號 / 背景 / 簡繁 ——
     if (showAa) {
         ModalBottomSheet(onDismissRequest = { showAa = false }) {
             Column(Modifier.padding(16.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("字号：${state.fontSize}sp",
+                var fontDraft by remember(state.fontSize) {
+                    mutableStateOf(state.fontSize.toFloat())
+                }
+                Text("字号：${fontDraft.toInt()}sp",
                     style = MaterialTheme.typography.titleSmall)
                 Slider(
-                    value = state.fontSize.toFloat(),
-                    onValueChange = { vm.setFont(it.toInt()) },
+                    value = fontDraft,
+                    onValueChange = { fontDraft = it },
+                    onValueChangeFinished = { vm.setFont(fontDraft.toInt()) },
                     valueRange = 14f..26f, steps = 11)
                 Text("背景", style = MaterialTheme.typography.titleSmall)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -609,64 +895,173 @@ fun ReaderScreen(
                             })
                     }
                 }
+                Text("字体（v1.6 简繁切换）",
+                    style = MaterialTheme.typography.titleSmall)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(selected = state.simplified,
+                        onClick = { vm.setSimplified(true) },
+                        label = { Text("简体") })
+                    FilterChip(selected = !state.simplified,
+                        onClick = { vm.setSimplified(false) },
+                        label = { Text("繁体（原文）") })
+                }
+                Text("左右滑动翻页 · 长按正文并拖动手指选字划线",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }
 }
 
-/** 正文段落：襯線 + 首行縮進二字 + 字句級劃線着色 + 批注隨文。 */
-@OptIn(ExperimentalFoundationApi::class)
+/** 單頁：章首飾題（僅第一頁）+ 段塊序列（高度與分頁預算嚴格一致）。 */
 @Composable
-private fun ParaText(
+private fun PageView(
+    page: ReaderPage,
+    isFirst: Boolean,
+    headerTitle: String,
+    headerStyle: TextStyle,
+    theme: ReaderTheme,
+    bodyStyle: TextStyle,
+    paras: List<ReaderViewModel.Para>,
+    annByPara: Map<Int, List<AnnotationStore.Annotation>>,
+    sel: SelInfo?,
+    flashPara: Int?,
+    onSel: (SelInfo?) -> Unit,
+    onViewNote: (AnnotationStore.Annotation) -> Unit,
+) {
+    Column(
+        Modifier.fillMaxSize()
+            .pointerInput(Unit) { detectTapGestures { onSel(null) } }
+            .padding(horizontal = 22.dp, vertical = 12.dp),
+    ) {
+        if (isFirst) {
+            Spacer(Modifier.height(18.dp))
+            Text(headerTitle, style = headerStyle,
+                modifier = Modifier.fillMaxWidth())
+            Row(Modifier.fillMaxWidth().padding(top = 10.dp).height(22.dp),
+                verticalAlignment = Alignment.CenterVertically) {
+                HorizontalDivider(Modifier.weight(1f),
+                    color = theme.accent.copy(alpha = 0.35f))
+                Box(Modifier.padding(horizontal = 8.dp).size(6.dp)
+                    .background(theme.accent, CircleShape))
+                HorizontalDivider(Modifier.weight(1f),
+                    color = theme.accent.copy(alpha = 0.35f))
+            }
+            Spacer(Modifier.height(14.dp))
+        }
+        page.chunks.forEachIndexed { i, chunk ->
+            if (i > 0) Spacer(Modifier.height(CHUNK_SPACING))
+            val para = paras.getOrNull(chunk.paraIndex)
+                ?: return@forEachIndexed
+            ChunkText(
+                chunk = chunk, para = para,
+                anns = annByPara[chunk.paraIndex].orEmpty(),
+                sel = sel, flash = flashPara == chunk.paraIndex,
+                theme = theme, style = bodyStyle,
+                onSel = onSel, onViewNote = onViewNote,
+            )
+        }
+    }
+}
+
+/** 段塊正文：直接在原文上長按拖曳選字（微信讀書式），
+ *  劃線/批注隨文着色，點按批注字句查看內容。 */
+@Composable
+private fun ChunkText(
+    chunk: PageChunk,
     para: ReaderViewModel.Para,
     anns: List<AnnotationStore.Annotation>,
-    theme: ReaderTheme,
-    fontSize: Int,
-    simplified: Boolean,
+    sel: SelInfo?,
     flash: Boolean,
-    onLongPress: () -> Unit,
+    theme: ReaderTheme,
+    style: TextStyle,
+    onSel: (SelInfo?) -> Unit,
+    onViewNote: (AnnotationStore.Annotation) -> Unit,
 ) {
-    val display = para.text.display(simplified)
-    val annotated: AnnotatedString = buildAnnotatedString {
-        append(display)
-        for (a in anns) {
-            if (a.kind == AnnotationStore.Kind.BOOKMARK.name) continue
-            // 簡繁顯示轉換為單字映射，字符偏移在兩空間一致
-            val start = if (a.selStart >= 0) a.selStart else 0
-            val end = if (a.selEnd > 0) a.selEnd else display.length
-            if (start < end && end <= display.length) {
-                addStyle(SpanStyle(background = theme.highlight), start, end)
+    val haptic = LocalHapticFeedback.current
+    val layoutRef = remember(chunk) {
+        mutableStateOf<TextLayoutResult?>(null)
+    }
+    val chunkEnd = chunk.dispStart + chunk.text.length
+    val annotated = remember(chunk, anns, sel, theme) {
+        buildAnnotatedString {
+            append(chunk.text)
+            for (a in anns) {
+                if (a.kind == AnnotationStore.Kind.BOOKMARK.name) continue
+                val r = annDispRange(a, para)
+                val ls = maxOf(r.first, chunk.dispStart) - chunk.dispStart
+                val le = minOf(r.last + 1, chunkEnd) - chunk.dispStart
+                if (ls < le) {
+                    if (a.kind == AnnotationStore.Kind.NOTE.name) {
+                        addStyle(SpanStyle(
+                            background = theme.highlight.copy(alpha = 0.25f),
+                            textDecoration = TextDecoration.Underline,
+                        ), ls, le)
+                    } else {
+                        addStyle(SpanStyle(background = theme.highlight),
+                            ls, le)
+                    }
+                }
+            }
+            if (sel != null && sel.para.index == para.index) {
+                val ls = maxOf(sel.dispStart, chunk.dispStart) -
+                    chunk.dispStart
+                val le = minOf(sel.dispEnd, chunkEnd) - chunk.dispStart
+                if (ls < le) {
+                    addStyle(SpanStyle(
+                        background = theme.accent.copy(alpha = 0.30f)),
+                        ls, le)
+                }
             }
         }
     }
-    Column(
-        Modifier
+    Text(
+        annotated,
+        style = style,
+        onTextLayout = { layoutRef.value = it },
+        modifier = Modifier
             .fillMaxWidth()
             .background(
                 if (flash) theme.highlight else Color.Transparent,
                 RoundedCornerShape(4.dp))
-            .combinedClickable(onClick = {}, onLongClick = onLongPress),
-    ) {
-        Text(
-            annotated,
-            color = theme.fg,
-            fontSize = fontSize.sp,
-            lineHeight = (fontSize * 1.85f).sp,
-            fontFamily = FontFamily.Serif,
-            style = MaterialTheme.typography.bodyLarge.copy(
-                textIndent = TextIndent(firstLine = 2.em),
-                fontSize = fontSize.sp,
-                lineHeight = (fontSize * 1.85f).sp,
-            ),
-        )
-        anns.filter { it.note.isNotBlank() }.forEach { a ->
-            Text("📝 ${a.note}",
-                style = MaterialTheme.typography.bodySmall,
-                color = theme.accent,
-                modifier = Modifier.padding(top = 2.dp, start = 8.dp))
-        }
-        if (anns.any { it.kind == AnnotationStore.Kind.BOOKMARK.name }) {
-            Text("🔖", modifier = Modifier.padding(start = 8.dp))
-        }
-    }
+            .pointerInput(chunk) {
+                var anchor = 0
+                detectDragGesturesAfterLongPress(
+                    onDragStart = { pos ->
+                        haptic.performHapticFeedback(
+                            HapticFeedbackType.LongPress)
+                        val l = layoutRef.value
+                            ?: return@detectDragGesturesAfterLongPress
+                        anchor = l.getOffsetForPosition(pos)
+                        onSel(SelInfo(para,
+                            chunk.dispStart + anchor,
+                            chunk.dispStart + (anchor + 1)
+                                .coerceAtMost(chunk.text.length)))
+                    },
+                    onDrag = { change, _ ->
+                        change.consume()
+                        val l = layoutRef.value ?: return@detectDragGesturesAfterLongPress
+                        val off = l.getOffsetForPosition(change.position)
+                        val s = minOf(anchor, off)
+                        val e = (maxOf(anchor, off) + 1)
+                            .coerceAtMost(chunk.text.length)
+                        if (s < e) {
+                            onSel(SelInfo(para,
+                                chunk.dispStart + s, chunk.dispStart + e))
+                        }
+                    },
+                )
+            }
+            .pointerInput(chunk, anns) {
+                detectTapGestures { pos ->
+                    val off = layoutRef.value?.getOffsetForPosition(pos)
+                    val hit = if (off != null) anns.firstOrNull { a ->
+                        a.kind == AnnotationStore.Kind.NOTE.name &&
+                            a.note.isNotBlank() &&
+                            (chunk.dispStart + off) in annDispRange(a, para)
+                    } else null
+                    if (hit != null) onViewNote(hit) else onSel(null)
+                }
+            },
+    )
 }

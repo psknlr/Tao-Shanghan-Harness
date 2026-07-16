@@ -92,7 +92,7 @@ object DirectLlm {
         model: String,
         system: String,
         user: String,
-        maxTokens: Int = 2048,
+        maxTokens: Int = 8192,
     ): Result<String> = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {
             return@withContext Result.failure(IllegalStateException("未配置 API Key"))
@@ -196,7 +196,7 @@ object DirectLlm {
      */
     suspend fun completeStream(
         provider: String, apiKey: String, baseUrl: String, model: String,
-        system: String, user: String, maxTokens: Int = 2048,
+        system: String, user: String, maxTokens: Int = 8192,
         onDelta: (String) -> Unit,
     ): Result<String> = withContext(Dispatchers.IO) {
         if (apiKey.isBlank()) {

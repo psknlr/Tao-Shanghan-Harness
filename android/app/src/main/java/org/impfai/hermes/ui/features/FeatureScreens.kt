@@ -281,7 +281,7 @@ private fun QuizSection(
                         """"answer":0,"explain":"解析","clause_id":"SHL_..."}]""",
                     user = "六经：${rule.sixChannel}\n纲领：${rule.outlineText}\n" +
                         "总说：${rule.summary}\n条文：\n$clauses",
-                    maxTokens = 2500,
+                    maxTokens = s.llmMaxTokens,
                 ).getOrNull()
                 if (res != null) {
                     val start = res.indexOf('[')

@@ -290,7 +290,8 @@ fun ResearchScreen(onOpenClause: (String) -> Unit, onBack: () -> Unit) {
                                             "数据与条文，引用条文用其方括号 ID，" +
                                             "不得虚构文献，不给临床用药建议。" +
                                             "输出格式：【引言】…【讨论】…",
-                                        user = draft, maxTokens = 3000)
+                                        user = draft,
+                                        maxTokens = s.llmMaxTokens)
                                     res.onSuccess { full ->
                                         val di = full.indexOf("【讨论】")
                                         if (di > 0) {

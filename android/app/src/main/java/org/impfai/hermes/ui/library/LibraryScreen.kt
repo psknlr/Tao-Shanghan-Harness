@@ -191,8 +191,8 @@ fun LibraryScreen(
                 CircularProgressIndicator()
             }
             false -> Column(Modifier.padding(padding).padding(16.dp)) {
-                NoticeBar("全量古籍库未内置本包。VIP-full 版已预装 803 部；" +
-                    "轻量包可连接 Hermes 服务端使用全库。", warning = true)
+                NoticeBar("全量古籍库未内置本包（轻量版）。请安装 VIP-full 版" +
+                    "使用全量古籍库，或连接 Hermes 服务端。", warning = true)
             }
             true -> Column(Modifier.fillMaxSize().padding(padding)) {
                 TabRow(selectedTabIndex = state.tab) {
@@ -223,7 +223,7 @@ private fun Bookshelf(
     ) {
         item {
             Text(
-                "中医笈成全库 · 共 ${state.nBooks} 部 · 收藏 ${state.favorites.size}",
+                "中医笈成全库 · 收藏 ${state.favorites.size}",
                 style = MaterialTheme.typography.labelLarge,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary,

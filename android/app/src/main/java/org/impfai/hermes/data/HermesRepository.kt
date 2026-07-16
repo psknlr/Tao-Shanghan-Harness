@@ -248,6 +248,7 @@ class HermesRepository(
             baseUrl = s.llmBaseUrl, model = s.llmModel,
             system = directSystemPrompt,
             user = "【证据条文】\n$evidenceBlock\n\n【问题】\n$question",
+            maxTokens = s.llmMaxTokens,
             onDelta = { onEvent(StreamEvent.Delta(it)) },
         ).getOrElse { e ->
             return RepoResult.Error("LLM_ERROR", e.message ?: "模型调用失败")
@@ -312,6 +313,7 @@ class HermesRepository(
             provider = s.llmProvider, apiKey = s.llmApiKey,
             baseUrl = s.llmBaseUrl, model = s.llmModel,
             system = directSystemPrompt, user = userPrompt,
+            maxTokens = s.llmMaxTokens,
         ).getOrElse { e ->
             return RepoResult.Error("LLM_ERROR", e.message ?: "模型调用失败")
         }

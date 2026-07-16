@@ -68,6 +68,7 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         val llmApiKey: String = "",
         val llmBaseUrl: String = "",
         val llmModel: String = "",
+        val llmMaxTokens: String = "8192",
         val llmSaved: Boolean = false,
         val llmTesting: Boolean = false,
         val llmTestResult: String = "",
@@ -86,6 +87,7 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
                 offlineOnly = s.offlineOnly,
                 llmProvider = s.llmProvider, llmApiKey = s.llmApiKey,
                 llmBaseUrl = s.llmBaseUrl, llmModel = s.llmModel,
+                llmMaxTokens = s.llmMaxTokens.toString(),
             )
         }
     }
@@ -93,21 +95,26 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
     fun editLlm(
         provider: String? = null, apiKey: String? = null,
         baseUrl: String? = null, model: String? = null,
+        maxTokens: String? = null,
     ) {
         _state.value = _state.value.copy(
             llmProvider = provider ?: _state.value.llmProvider,
             llmApiKey = apiKey ?: _state.value.llmApiKey,
             llmBaseUrl = baseUrl ?: _state.value.llmBaseUrl,
             llmModel = model ?: _state.value.llmModel,
+            llmMaxTokens = maxTokens ?: _state.value.llmMaxTokens,
             llmSaved = false,
         )
     }
+
+    private fun maxTokensOrDefault(): Int =
+        _state.value.llmMaxTokens.trim().toIntOrNull() ?: 8192
 
     fun saveLlm() {
         viewModelScope.launch {
             val st = _state.value
             container.settings.setLlm(st.llmProvider, st.llmApiKey,
-                st.llmBaseUrl, st.llmModel)
+                st.llmBaseUrl, st.llmModel, maxTokensOrDefault())
             _state.value = _state.value.copy(llmSaved = true)
         }
     }
@@ -117,7 +124,8 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
             val st = _state.value
             _state.value = st.copy(llmTesting = true, llmTestResult = "")
             container.settings.setLlm(st.llmProvider, st.llmApiKey,
-                st.llmBaseUrl, st.llmModel)   // 先保存再測：測的就是將用的配置
+                st.llmBaseUrl, st.llmModel,
+                maxTokensOrDefault())   // 先保存再測：測的就是將用的配置
             val r = DirectLlm.testConnection(st.llmProvider, st.llmApiKey,
                 st.llmBaseUrl, st.llmModel)
             _state.value = _state.value.copy(
@@ -337,6 +345,22 @@ fun SettingsScreen() {
                     label = { Text("模型名（留空用默认）") },
                     placeholder = { Text(DirectLlm.defaultModel(state.llmProvider)) },
                     singleLine = true,
+                )
+                OutlinedTextField(
+                    value = state.llmMaxTokens,
+                    onValueChange = { s ->
+                        vm.editLlm(maxTokens = s.filter { it.isDigit() }.take(6))
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("最大输出 tokens（防长答截断）") },
+                    placeholder = { Text("8192") },
+                    supportingText = {
+                        Text("v1.6：全部模型调用统一使用该上限（1024–65536）；" +
+                            "MiniMax-M3 等支持长输出的模型可调大到 32768+")
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number),
                 )
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Button(onClick = vm::saveLlm) {
