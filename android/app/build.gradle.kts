@@ -101,9 +101,10 @@ val copyVipAssets = tasks.register<Copy>("copyVipAssets") {
         from(rootProject.file("../backend/data/skills/shanghanlun"))
     }
     // 全量古籍庫（803 部 / 317MB；tools/prepare_library.md 生成，不入 git）
-    // library-pack 缺失時 VIP 照常構建，古籍庫界面顯示「未內置」
+    // library-pack 缺失或 -PvipLite 時 VIP 照常構建（VIP-lite），
+    // 古籍庫界面顯示「未內置」引導
     val libraryPack = rootProject.file("library-pack")
-    if (libraryPack.isDirectory) {
+    if (libraryPack.isDirectory && !project.hasProperty("vipLite")) {
         into("library") { from(libraryPack) }
     }
     // Skill 索引文件：AssetManager.list() 對子目錄的行為因環境而異
