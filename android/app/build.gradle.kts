@@ -14,8 +14,8 @@ android {
         applicationId = "org.impfai.hermes"
         minSdk = 26
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.3.0"
+        versionCode = 5
+        versionName = "1.4.0"
     }
 
     // standard：知識閱讀 + 服務端接入

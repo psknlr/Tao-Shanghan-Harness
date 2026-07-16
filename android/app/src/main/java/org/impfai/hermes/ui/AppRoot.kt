@@ -33,6 +33,7 @@ import org.impfai.hermes.ui.features.MistreatScreen
 import org.impfai.hermes.ui.features.TeachScreen
 import org.impfai.hermes.ui.features.TraceScreen
 import org.impfai.hermes.ui.library.LibraryScreen
+import org.impfai.hermes.ui.library.ReaderScreen
 import org.impfai.hermes.ui.research.ResearchScreen
 import org.impfai.hermes.ui.search.SearchScreen
 import org.impfai.hermes.ui.settings.SettingsScreen
@@ -148,6 +149,10 @@ fun AppRoot() {
                         navController.navigate(
                             "agent?prefill=${android.net.Uri.encode(question)}")
                     },
+                    onOpenBook = { book ->
+                        navController.navigate(
+                            "reader?title=${android.net.Uri.encode(book)}&section=")
+                    },
                 )
             }
             composable("skills") {
@@ -174,7 +179,27 @@ fun AppRoot() {
                     onBack = { navController.popBackStack() })
             }
             composable("library") {
-                LibraryScreen(onBack = { navController.popBackStack() })
+                LibraryScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpenBook = { bookId, section ->
+                        navController.navigate(
+                            "reader?title=${android.net.Uri.encode(bookId)}" +
+                                "&section=${android.net.Uri.encode(section)}")
+                    },
+                )
+            }
+            composable(
+                route = "reader?title={title}&section={section}",
+                arguments = listOf(
+                    navArgument("title") { defaultValue = "" },
+                    navArgument("section") { defaultValue = "" },
+                ),
+            ) { entry ->
+                ReaderScreen(
+                    titleOrId = entry.arguments?.getString("title") ?: "",
+                    initialSection = entry.arguments?.getString("section") ?: "",
+                    onBack = { navController.popBackStack() },
+                )
             }
         }
     }

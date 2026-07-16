@@ -33,6 +33,11 @@ data class AppSettings(
     val llmApiKey: String = "",
     val llmBaseUrl: String = "",
     val llmModel: String = "",
+    // —— 古籍閱讀器（v1.4 Kindle 式體驗）——
+    val readerFontSize: Int = 18,           // sp，14..26
+    val readerTheme: String = "paper",      // paper | white | green | night
+    val libraryFavorites: Set<String> = emptySet(),
+    val libraryRecents: List<String> = emptyList(),
 ) {
     companion object {
         const val DEFAULT_BASE_URL = "http://10.0.2.2:8765/"
@@ -59,6 +64,11 @@ class SettingsRepository(private val context: Context) {
         val LLM_API_KEY = stringPreferencesKey("llm_api_key")
         val LLM_BASE_URL = stringPreferencesKey("llm_base_url")
         val LLM_MODEL = stringPreferencesKey("llm_model")
+        val READER_FONT = androidx.datastore.preferences.core
+            .intPreferencesKey("reader_font_size")
+        val READER_THEME = stringPreferencesKey("reader_theme")
+        val LIB_FAVORITES = stringSetPreferencesKey("library_favorites")
+        val LIB_RECENTS = stringPreferencesKey("library_recents")   // "id|id|…"
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -73,6 +83,11 @@ class SettingsRepository(private val context: Context) {
             llmApiKey = p[Keys.LLM_API_KEY] ?: "",
             llmBaseUrl = p[Keys.LLM_BASE_URL] ?: "",
             llmModel = p[Keys.LLM_MODEL] ?: "",
+            readerFontSize = p[Keys.READER_FONT] ?: 18,
+            readerTheme = p[Keys.READER_THEME] ?: "paper",
+            libraryFavorites = p[Keys.LIB_FAVORITES] ?: emptySet(),
+            libraryRecents = (p[Keys.LIB_RECENTS] ?: "")
+                .split('|').filter { it.isNotBlank() },
         )
     }
 
@@ -100,6 +115,30 @@ class SettingsRepository(private val context: Context) {
             p[Keys.LLM_API_KEY] = apiKey.trim()
             p[Keys.LLM_BASE_URL] = baseUrl.trim()
             p[Keys.LLM_MODEL] = model.trim()
+        }
+    }
+
+    suspend fun setReaderPrefs(fontSize: Int? = null, theme: String? = null) {
+        context.dataStore.edit { p ->
+            fontSize?.let { p[Keys.READER_FONT] = it.coerceIn(14, 26) }
+            theme?.let { p[Keys.READER_THEME] = it }
+        }
+    }
+
+    suspend fun toggleLibraryFavorite(bookId: String) {
+        context.dataStore.edit { p ->
+            val cur = p[Keys.LIB_FAVORITES] ?: emptySet()
+            p[Keys.LIB_FAVORITES] =
+                if (bookId in cur) cur - bookId else cur + bookId
+        }
+    }
+
+    suspend fun pushLibraryRecent(bookId: String) {
+        context.dataStore.edit { p ->
+            val cur = (p[Keys.LIB_RECENTS] ?: "")
+                .split('|').filter { it.isNotBlank() && it != bookId }
+            p[Keys.LIB_RECENTS] = (listOf(bookId) + cur).take(12)
+                .joinToString("|")
         }
     }
 

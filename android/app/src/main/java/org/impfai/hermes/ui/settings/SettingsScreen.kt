@@ -285,12 +285,19 @@ fun SettingsScreen() {
                     "（不随云备份、不发送到 Hermes 服务端）。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                    DirectLlm.PROVIDERS.forEach { p ->
+                Text("一键预设（填好端点与模型名，只需再填 Key）：",
+                    style = MaterialTheme.typography.labelMedium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    DirectLlm.PRESETS.forEach { ps ->
                         FilterChip(
-                            selected = state.llmProvider == p,
-                            onClick = { vm.editLlm(provider = p) },
-                            label = { Text(DirectLlm.PROVIDER_LABELS[p] ?: p) },
+                            selected = state.llmBaseUrl == ps.baseUrl &&
+                                state.llmProvider == ps.provider,
+                            onClick = {
+                                vm.editLlm(provider = ps.provider,
+                                    baseUrl = ps.baseUrl, model = ps.model)
+                            },
+                            label = { Text(ps.label) },
                         )
                     }
                 }

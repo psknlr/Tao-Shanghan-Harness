@@ -107,6 +107,7 @@ fun ClauseScreen(
     onOpenClause: (String) -> Unit,
     onBack: () -> Unit,
     onAskAi: (question: String) -> Unit = {},
+    onOpenBook: (bookTitle: String) -> Unit = {},
 ) {
     val container = rememberContainer()
     val vm: ClauseViewModel = viewModel(key = "clause-$clauseRef") {
@@ -334,12 +335,36 @@ fun ClauseScreen(
                 item {
                     SectionCard("条文关系") {
                         d.relations.forEach { rel ->
-                            TextButton(onClick = { onOpenClause(rel.clauseId) }) {
-                                Text(
-                                    "${rel.relationType} → ${rel.clauseId}"
+                            val target = rel.clauseId
+                            when {
+                                // 條文 → 條文
+                                target.startsWith("SHL_") -> TextButton(
+                                    onClick = { onOpenClause(target) }) {
+                                    Text("${rel.relationType} → $target"
+                                        .display(simplified),
+                                        style = MaterialTheme
+                                            .typography.labelMedium)
+                                }
+                                // "書名:pNNN" 類注家/文獻引用 → 古籍庫開卷
+                                //（v1.4 修復：此前誤當條文 id 導致 NOT_FOUND）
+                                target.contains(":") -> TextButton(
+                                    onClick = {
+                                        onOpenBook(target.substringBefore(":"))
+                                    }) {
+                                    Text(("${rel.relationType} → " +
+                                        "${target.substringBefore(":")} 开卷 ▸")
+                                        .display(simplified),
+                                        style = MaterialTheme
+                                            .typography.labelMedium)
+                                }
+                                else -> Text(
+                                    "${rel.relationType} → $target"
                                         .display(simplified),
                                     style = MaterialTheme.typography.labelMedium,
-                                )
+                                    color = MaterialTheme.colorScheme
+                                        .onSurfaceVariant,
+                                    modifier = Modifier.padding(
+                                        horizontal = 12.dp, vertical = 4.dp))
                             }
                         }
                     }

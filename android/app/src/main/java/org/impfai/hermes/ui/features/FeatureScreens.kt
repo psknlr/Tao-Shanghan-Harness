@@ -408,26 +408,26 @@ fun TraceScreen(onOpenClause: (String) -> Unit, onBack: () -> Unit) {
         simplified = container.settings.current().simplifiedDisplay
     }
 
+    // 雙空間比對（v1.4）：查詢與原文都折疊到「簡體+異體歸一」空間再
+    // contains——領域 S2T 映射的任何殘餘缺口都不會再造成 0 命中
+    fun canon(s: String): String =
+        TextNorm.t2s(TextNorm.foldVariants(TextNorm.s2t(s)))
+            .replace(Regex("\\s+"), "")
+
     suspend fun run() {
         val store = container.localStore
         store.ensureLoaded()
-        val q = TextNorm.foldVariants(
-            TextNorm.s2t(input.trim())).replace(Regex("\\s+"), "")
+        val q = canon(input.trim())
         if (q.isBlank()) return
         val all = store.allClauses()
         if (mode == "quote") {
-            exact = all.filter {
-                TextNorm.foldVariants(it.cleanText).replace(Regex("\\s+"), "")
-                    .contains(q)
-            }.take(10)
+            exact = all.filter { canon(it.cleanText).contains(q) }.take(10)
             nearest = if (exact.isNotEmpty()) emptyList()
             else all.map { c ->
-                c to dice(q, TextNorm.foldVariants(c.cleanText))
+                c to dice(q, canon(c.cleanText))
             }.sortedByDescending { it.second }.take(5)
         } else {
-            termHits = all.filter {
-                TextNorm.foldVariants(it.cleanText).contains(q)
-            }
+            termHits = all.filter { canon(it.cleanText).contains(q) }
         }
         searched = true
     }

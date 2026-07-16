@@ -143,6 +143,21 @@ class LibraryStore(private val context: Context) {
 
     fun unit(id: String): Unit_? = byId[id]
 
+    /** 按書名解析單元（條文關係中的 "傷寒論注:p1294" 類引用跳轉用）：
+     *  異體字折疊後精確匹配 title 或 id，其次前綴匹配。 */
+    suspend fun findByTitle(title: String): Unit_? {
+        if (!ensureCatalog()) return null
+        val t = TextNorm.foldVariants(title.trim())
+        if (t.isBlank()) return null
+        val units = catalog!!.units
+        return units.firstOrNull {
+            TextNorm.foldVariants(it.title) == t ||
+                TextNorm.foldVariants(it.id) == t
+        } ?: units.firstOrNull {
+            TextNorm.foldVariants(it.title).startsWith(t)
+        }
+    }
+
     private fun unitText(u: Unit_): String = buildString {
         for (name in u.files) {
             try {

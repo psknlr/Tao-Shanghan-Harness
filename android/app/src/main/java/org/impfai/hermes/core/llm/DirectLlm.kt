@@ -38,8 +38,8 @@ object DirectLlm {
     )
 
     // OpenAI 兼容端點默認指向 Poe（用戶要求）：一個 Poe Key 可調用
-    // Claude/GPT/Gemini 等全系模型；填其他兼容端點（OpenAI 官方/中轉）
-    // 只需改 Base URL。
+    // Claude/GPT/Gemini 等全系模型；填其他兼容端點（OpenAI 官方/
+    // MiniMax/中轉）只需改 Base URL。
     fun defaultBaseUrl(provider: String): String = when (provider) {
         PROVIDER_ANTHROPIC -> "https://api.anthropic.com"
         else -> "https://api.poe.com"
@@ -48,6 +48,33 @@ object DirectLlm {
     fun defaultModel(provider: String): String = when (provider) {
         PROVIDER_ANTHROPIC -> "claude-sonnet-5"
         else -> "Claude-Sonnet-4.6"
+    }
+
+    /** 設置頁一鍵預設：(標籤, provider, baseUrl, model)。 */
+    data class Preset(val label: String, val provider: String,
+                      val baseUrl: String, val model: String)
+
+    val PRESETS = listOf(
+        Preset("Poe", PROVIDER_OPENAI, "https://api.poe.com", "Claude-Sonnet-4.6"),
+        Preset("MiniMax 国内", PROVIDER_OPENAI,
+            "https://api.minimaxi.com/v1", "MiniMax-M3"),
+        Preset("MiniMax 国际", PROVIDER_OPENAI,
+            "https://api.minimax.io/v1", "MiniMax-M3"),
+        Preset("OpenAI", PROVIDER_OPENAI, "https://api.openai.com", "gpt-4o"),
+        Preset("Anthropic", PROVIDER_ANTHROPIC,
+            "https://api.anthropic.com", "claude-sonnet-5"),
+    )
+
+    /**
+     * 端點拼接（v1.4 修復：MiniMax 等文檔給的 base_url 自帶 /v1，
+     * 此前無腦再拼 /v1 → …/v1/v1/chat/completions 必然 404）。
+     * 規則：base 已以 /v1 結尾則直接拼資源路徑；也容忍用戶把完整
+     * /chat/completions 路徑貼進來。
+     */
+    fun endpointUrl(base: String, resource: String): String {
+        val b = base.trimEnd('/')
+        if (b.endsWith("/$resource")) return b
+        return if (b.endsWith("/v1")) "$b/$resource" else "$b/v1/$resource"
     }
 
     private val json = Json { ignoreUnknownKeys = true }
@@ -101,15 +128,18 @@ object DirectLlm {
                 })
             })
         }
+        val url = endpointUrl(base, "messages")
         val req = Request.Builder()
-            .url("$base/v1/messages")
+            .url(url)
             .header("x-api-key", key)
             .header("anthropic-version", "2023-06-01")
             .post(body.toString().toRequestBody(media))
             .build()
         client.newCall(req).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) return Result.failure(httpError(resp.code, text))
+            if (!resp.isSuccessful) {
+                return Result.failure(httpError(resp.code, text, url))
+            }
             val root = json.parseToJsonElement(text).jsonObject
             val answer = root["content"]?.jsonArray
                 ?.mapNotNull { blk ->
@@ -137,14 +167,17 @@ object DirectLlm {
                 add(buildJsonObject { put("role", "user"); put("content", user) })
             })
         }
+        val url = endpointUrl(base, "chat/completions")
         val req = Request.Builder()
-            .url("$base/v1/chat/completions")
+            .url(url)
             .header("Authorization", "Bearer $key")
             .post(body.toString().toRequestBody(media))
             .build()
         client.newCall(req).execute().use { resp ->
             val text = resp.body?.string().orEmpty()
-            if (!resp.isSuccessful) return Result.failure(httpError(resp.code, text))
+            if (!resp.isSuccessful) {
+                return Result.failure(httpError(resp.code, text, url))
+            }
             val root = json.parseToJsonElement(text).jsonObject
             val answer = root["choices"]?.jsonArray?.firstOrNull()
                 ?.jsonObject?.get("message")?.jsonObject
@@ -156,7 +189,7 @@ object DirectLlm {
         }
     }
 
-    private fun httpError(code: Int, body: String): Exception {
+    private fun httpError(code: Int, body: String, url: String): Exception {
         val hint = when (code) {
             400 -> "请求被拒（HTTP 400，常见原因：模型名不存在或参数不符）"
             401, 403 -> "API Key 无效或无权限（HTTP $code）"
@@ -165,7 +198,7 @@ object DirectLlm {
             else -> "HTTP $code"
         }
         val detail = body.take(300).replace('\n', ' ')
-        return IOException("$hint：$detail")
+        return IOException("$hint：$detail\n请求端点：$url")
     }
 
     /** 設置頁「測試模型連接」：最小補全驗證 Key/端點/模型三件套。

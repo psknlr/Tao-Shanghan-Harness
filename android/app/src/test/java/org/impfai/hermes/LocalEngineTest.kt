@@ -123,6 +123,35 @@ class LocalEngineTest {
     }
 
     @Test
+    fun s2t_supplement_and_term_pedigree() = runBlocking {
+        // v1.4 修復：s2t 缺「来」→「往来寒热」逐字匹配 0 命中
+        assertEquals("往來寒熱",
+            org.impfai.hermes.engine.TextNorm.s2t("往来寒热"))
+        store.ensureLoaded()
+        val canon = { s: String ->
+            org.impfai.hermes.engine.TextNorm.t2s(
+                org.impfai.hermes.engine.TextNorm.foldVariants(
+                    org.impfai.hermes.engine.TextNorm.s2t(s)))
+        }
+        val q = canon("往来寒热")
+        val hits = store.allClauses().count { canon(it.cleanText).contains(q) }
+        assertTrue("术语谱系应命中多条（实际 $hits）", hits >= 5)
+        // 藥名歸一不被補充表破壞：白术 → 白朮
+        assertEquals("白朮", org.impfai.hermes.engine.TextNorm.s2t("白术"))
+    }
+
+    @Test
+    fun vip_library_find_by_title() = runBlocking {
+        if (!BuildConfig.VIP) return@runBlocking
+        val lib = org.impfai.hermes.engine.LibraryStore(
+            ApplicationProvider.getApplicationContext())
+        if (!lib.ensureCatalog()) return@runBlocking   // lite 構建無庫
+        // 條文關係中的 "傷寒論注:p1294" → 書名應可解析開卷
+        val u = lib.findByTitle("傷寒論注")
+        assertTrue("傷寒論注 应在 803 部书目中", u != null)
+    }
+
+    @Test
     fun vip_skills_available() = runBlocking {
         val skills = org.impfai.hermes.engine.SkillStore(
             ApplicationProvider.getApplicationContext()).list()

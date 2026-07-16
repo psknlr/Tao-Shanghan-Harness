@@ -83,4 +83,47 @@ class DirectLlmTest {
         assertEquals("Claude-Sonnet-4.6",
             DirectLlm.defaultModel(DirectLlm.PROVIDER_OPENAI))
     }
+
+    @Test
+    fun endpoint_url_never_doubles_v1() {
+        // v1.4 修復：MiniMax 文檔 base_url 自帶 /v1，此前拼出 /v1/v1 必 404
+        assertEquals("https://api.minimaxi.com/v1/chat/completions",
+            DirectLlm.endpointUrl("https://api.minimaxi.com/v1",
+                "chat/completions"))
+        assertEquals("https://api.poe.com/v1/chat/completions",
+            DirectLlm.endpointUrl("https://api.poe.com", "chat/completions"))
+        assertEquals("https://x.cn/v1/chat/completions",
+            DirectLlm.endpointUrl("https://x.cn/v1/", "chat/completions"))
+        // 用戶把完整路徑貼進來也容忍
+        assertEquals("https://x.cn/v1/chat/completions",
+            DirectLlm.endpointUrl("https://x.cn/v1/chat/completions",
+                "chat/completions"))
+        assertEquals("https://api.anthropic.com/v1/messages",
+            DirectLlm.endpointUrl("https://api.anthropic.com", "messages"))
+    }
+
+    @Test
+    fun minimax_v1_base_roundtrip() = runBlocking {
+        val server = MockWebServer()
+        server.enqueue(MockResponse().setBody(
+            """{"choices":[{"message":{"role":"assistant","content":"ok"}}]}"""))
+        server.start()
+        // 模擬 MiniMax 風格：base 自帶 /v1
+        val base = server.url("/v1").toString()
+        val r = DirectLlm.complete(DirectLlm.PROVIDER_OPENAI, "k", base,
+            "MiniMax-M3", "s", "u")
+        assertTrue(r.isSuccess)
+        assertEquals("/v1/chat/completions", server.takeRequest().path)
+        server.shutdown()
+    }
+
+    @Test
+    fun presets_cover_minimax_and_poe() {
+        val labels = DirectLlm.PRESETS.map { it.label }
+        assertTrue(labels.any { it.contains("Poe") })
+        assertTrue(labels.any { it.contains("MiniMax") })
+        val mm = DirectLlm.PRESETS.first { it.label == "MiniMax 国内" }
+        assertEquals("https://api.minimaxi.com/v1", mm.baseUrl)
+        assertEquals("MiniMax-M3", mm.model)
+    }
 }

@@ -8,6 +8,7 @@ import kotlinx.coroutines.launch
 import org.impfai.hermes.core.network.ApiClientFactory
 import org.impfai.hermes.core.settings.SettingsRepository
 import org.impfai.hermes.data.HermesRepository
+import org.impfai.hermes.engine.AnnotationStore
 import org.impfai.hermes.engine.LibraryStore
 import org.impfai.hermes.engine.LocalClauseStore
 import org.impfai.hermes.engine.SkillStore
@@ -21,6 +22,7 @@ class AppContainer(app: Application) {
     val localStore = LocalClauseStore(app)
     val skillStore = SkillStore(app)
     val libraryStore = LibraryStore(app)
+    val annotationStore = AnnotationStore(app)
     val apiFactory = ApiClientFactory()
     val repo = HermesRepository(settings, localStore, apiFactory)
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
