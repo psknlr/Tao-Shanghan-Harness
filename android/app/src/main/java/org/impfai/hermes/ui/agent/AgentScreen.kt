@@ -117,11 +117,12 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
 }
 
 @Composable
-fun AgentScreen(onOpenClause: (String) -> Unit) {
+fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
     val container = rememberContainer()
     val vm: AgentViewModel = viewModel { AgentViewModel(container) }
     val state by vm.state.collectAsStateWithLifecycle()
-    var input by remember { mutableStateOf("") }
+    // 條文頁「AI 解讀」帶入的預填問題；prefill 變化（換條文）時重置輸入
+    var input by remember(prefill) { mutableStateOf(prefill) }
     val listState = rememberLazyListState()
 
     LaunchedEffect(state.items.size, state.loading) {

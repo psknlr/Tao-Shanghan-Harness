@@ -108,6 +108,7 @@ fun HomeScreen(
     onOpenClause: (String) -> Unit,
     onOpenSettings: () -> Unit,
     onOpenSkills: () -> Unit = {},
+    onOpenFeature: (route: String) -> Unit = {},
 ) {
     val container = rememberContainer()
     val vm: HomeViewModel = viewModel { HomeViewModel(container) }
@@ -266,6 +267,36 @@ fun HomeScreen(
                         onClick = { onOpenSearch("", ch) },
                         label = { Text(ch.display(state.simplified)) },
                     )
+                }
+            }
+        }
+
+        // 功能宮格：原平台 15 模塊中已端側化/可用的入口
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("研习工作台", style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf(
+                    "六经教学" to "teach",
+                    "方证鉴别" to "differential",
+                    "误治传变" to "mistreat",
+                    "科研·论文" to "research",
+                    "溯源工作台" to "trace",
+                    "古籍库" to "library",
+                ).forEach { (label, route) ->
+                    Card(
+                        Modifier.clickable { onOpenFeature(route) },
+                    ) {
+                        Text(label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(
+                                horizontal = 16.dp, vertical = 12.dp))
+                    }
                 }
             }
         }

@@ -57,6 +57,14 @@ class LocalClauseStore(private val context: Context) {
         @SerialName("formula_blocks") val formulaBlocks: List<LocalFormulaBlock> = emptyList(),
     )
 
+    /** 規則庫禁忌記錄：帶條文座標的對象（v1.3 修復：此前誤聲明為
+     *  List<String>，導致桂枝湯等 23 條帶禁忌的規則整行解析失敗被丟）。 */
+    @Serializable
+    data class ContraRec(
+        @SerialName("clause_id") val clauseId: String = "",
+        val condition: String = "",
+    )
+
     @Serializable
     data class FormulaRule(
         @SerialName("formula_pattern_rule_id") val ruleId: String = "",
@@ -68,7 +76,7 @@ class LocalClauseStore(private val context: Context) {
         @SerialName("core_pulse") val corePulse: List<String> = emptyList(),
         @SerialName("associated_symptoms") val associatedSymptoms: List<String> = emptyList(),
         @SerialName("associated_pulse") val associatedPulse: List<String> = emptyList(),
-        val contraindications: List<String> = emptyList(),
+        val contraindications: List<ContraRec> = emptyList(),
         val composition: List<HerbDose> = emptyList(),
         @SerialName("administration_notes") val administrationNotes: List<String> = emptyList(),
         @SerialName("supporting_clauses") val supportingClauses: List<String> = emptyList(),
@@ -107,6 +115,68 @@ class LocalClauseStore(private val context: Context) {
     )
 
     @Serializable
+    data class ScSubtype(
+        val name: String = "",
+        @SerialName("anchor_formulas") val anchorFormulas: List<String> = emptyList(),
+        @SerialName("evidence_clauses") val evidenceClauses: List<String> = emptyList(),
+    )
+
+    @Serializable
+    data class ScMainFormula(
+        val formula: String = "",
+        @SerialName("clause_count") val clauseCount: Int = 0,
+    )
+
+    @Serializable
+    data class SixChannelRule(
+        @SerialName("six_channel_rule_id") val ruleId: String = "",
+        @SerialName("six_channel") val sixChannel: String = "",
+        @SerialName("outline_clause_id") val outlineClauseId: String = "",
+        @SerialName("outline_text") val outlineText: String = "",
+        val summary: String = "",
+        @SerialName("core_clauses") val coreClauses: List<String> = emptyList(),
+        val subtypes: List<ScSubtype> = emptyList(),
+        @SerialName("main_formulas") val mainFormulas: List<ScMainFormula> = emptyList(),
+        @SerialName("contraindication_clauses")
+        val contraindicationClauses: List<String> = emptyList(),
+        @SerialName("mistreatment_clauses")
+        val mistreatmentClauses: List<String> = emptyList(),
+        @SerialName("resolution_time") val resolutionTime: String = "",
+        @SerialName("release_level") val releaseLevel: String = "",
+    )
+
+    @Serializable
+    data class DifferentialRule(
+        @SerialName("differential_rule_id") val ruleId: String = "",
+        val formulas: List<String> = emptyList(),
+        @SerialName("six_channels") val sixChannels: List<String> = emptyList(),
+        @SerialName("shared_features") val sharedFeatures: List<String> = emptyList(),
+        @SerialName("contrast_table")
+        val contrastTable: List<kotlinx.serialization.json.JsonObject> = emptyList(),
+        @SerialName("key_discriminators")
+        val keyDiscriminators: List<String> = emptyList(),
+        @SerialName("composition_diff")
+        val compositionDiff: kotlinx.serialization.json.JsonObject? = null,
+        @SerialName("supporting_clauses")
+        val supportingClauses: List<String> = emptyList(),
+        @SerialName("release_level") val releaseLevel: String = "",
+    )
+
+    @Serializable
+    data class MistreatmentRule(
+        @SerialName("mistreatment_rule_id") val ruleId: String = "",
+        @SerialName("mistreatment_type") val mistreatmentType: String = "",
+        @SerialName("resulting_pattern") val resultingPattern: String = "",
+        val manifestations: List<String> = emptyList(),
+        @SerialName("rescue_formulas") val rescueFormulas: List<String> = emptyList(),
+        @SerialName("six_channel_scope") val sixChannelScope: List<String> = emptyList(),
+        val path: List<String> = emptyList(),
+        @SerialName("supporting_clauses")
+        val supportingClauses: List<String> = emptyList(),
+        @SerialName("release_level") val releaseLevel: String = "",
+    )
+
+    @Serializable
     private data class InitialRuleRec(
         @SerialName("initial_rule_id") val ruleId: String = "",
         @SerialName("clause_id") val clauseId: String = "",
@@ -132,6 +202,10 @@ class LocalClauseStore(private val context: Context) {
     private var variantsByClause: Map<String, List<ClauseVariant>> = emptyMap()
     private var relationsByClause: Map<String, List<ClauseRelation>> = emptyMap()
     private var initialRulesByClause: Map<String, List<InitialRule>> = emptyMap()
+    private var sixChannelRulesList: List<SixChannelRule> = emptyList()
+    private var differentialRulesList: List<DifferentialRule> = emptyList()
+    private var mistreatmentRulesList: List<MistreatmentRule> = emptyList()
+    private var formulaCatalogList: List<FormulaRule> = emptyList()
 
     val layerLabels = mapOf(
         "A" to "原文直述", "B" to "版本異文", "C" to "注家解釋",
@@ -248,9 +322,58 @@ class LocalClauseStore(private val context: Context) {
                             release = it.releaseLevel,
                             interpretation = it.interpretation)
                     })
+                sixChannelRulesList = readJsonlAsset(
+                    "shanghan/six_channel_rules.jsonl")
+                differentialRulesList = readJsonlAsset(
+                    "shanghan/differential_rules.jsonl")
+                mistreatmentRulesList = readJsonlAsset(
+                    "shanghan/mistreatment_rules.jsonl")
             }
             vipLoaded = true
         }
+    }
+
+    suspend fun sixChannelRules(): List<SixChannelRule> {
+        ensureLoaded(); ensureVipLoaded(); return sixChannelRulesList
+    }
+
+    suspend fun differentialRules(): List<DifferentialRule> {
+        ensureLoaded(); ensureVipLoaded(); return differentialRulesList
+    }
+
+    suspend fun mistreatmentRules(): List<MistreatmentRule> {
+        ensureLoaded(); ensureVipLoaded(); return mistreatmentRulesList
+    }
+
+    /** 方劑總目：規則庫（按支持條文數降序——常用方靠前，桂枝湯 33 條
+     *  不再被規則 ID 序埋沒）+ 語料方劑塊補全（有方無規則的也入目）。 */
+    suspend fun formulaCatalog(): List<FormulaRule> {
+        ensureLoaded()
+        if (formulaCatalogList.isNotEmpty()) return formulaCatalogList
+        val ruleByName = rules.associateBy { it.formula }
+        val fromBlocks = LinkedHashMap<String, FormulaRule>()
+        for (c in clauses) {
+            for (fb in c.formulaBlocks) {
+                val name = fb.formulaName
+                if (name.isBlank() || name in ruleByName || name in fromBlocks) continue
+                fromBlocks[name] = FormulaRule(
+                    ruleId = "BLOCK_$name",
+                    formula = name,
+                    sixChannelScope = listOfNotNull(c.sixChannel),
+                    corePattern = "（語料方劑塊，未歸納方證規則）",
+                    composition = fb.composition,
+                    administrationNotes = listOfNotNull(
+                        fb.administration.takeIf { it.isNotBlank() }),
+                    supportingClauses = listOf(c.clauseId),
+                    sourceLevel = "corpus_formula_block",
+                    releaseLevel = "corpus",
+                )
+            }
+        }
+        formulaCatalogList =
+            (rules.sortedByDescending { it.supportingClauses.size } +
+                fromBlocks.values.toList())
+        return formulaCatalogList
     }
 
     fun byId(id: String): LocalClause? = byId[id]
@@ -258,6 +381,8 @@ class LocalClauseStore(private val context: Context) {
     fun byNumber(n: Int): LocalClause? = byNumber[n]
 
     fun formulaRules(): List<FormulaRule> = rules
+
+    fun allClauses(): List<LocalClause> = clauses
 
     private val clauseNumQuery = Regex("第?(\\d{1,3})[條条]")
 

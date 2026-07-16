@@ -158,12 +158,32 @@ object DirectLlm {
 
     private fun httpError(code: Int, body: String): Exception {
         val hint = when (code) {
-            401, 403 -> "API Key 无效或无权限"
-            404 -> "端点或模型名不存在（检查 Base URL 与模型名）"
-            429 -> "限流或额度不足"
+            400 -> "请求被拒（HTTP 400，常见原因：模型名不存在或参数不符）"
+            401, 403 -> "API Key 无效或无权限（HTTP $code）"
+            404 -> "端点或模型名不存在（HTTP 404，检查 Base URL 与模型名）"
+            429 -> "限流或额度不足（HTTP 429）"
             else -> "HTTP $code"
         }
-        val detail = body.take(200).replace('\n', ' ')
+        val detail = body.take(300).replace('\n', ' ')
         return IOException("$hint：$detail")
+    }
+
+    /** 設置頁「測試模型連接」：最小補全驗證 Key/端點/模型三件套。
+     *  失敗信息盡量可行動（网络不可达≈需要中转端点；4xx≈Key/模型名）。 */
+    suspend fun testConnection(
+        provider: String, apiKey: String, baseUrl: String, model: String,
+    ): Result<String> {
+        val r = complete(provider, apiKey, baseUrl, model,
+            system = "You are a connectivity probe. Reply with exactly: 连接正常",
+            user = "ping", maxTokens = 16)
+        return r.map { "模型应答：${it.take(40)}" }.recoverCatching { e ->
+            val msg = e.message ?: "未知错误"
+            val extra = if (msg.contains("网络请求失败") ||
+                msg.contains("timeout", true) ||
+                msg.contains("failed to connect", true)
+            ) "\n提示：手机网络无法直连该端点时（如大陆网络访问 api.poe.com），" +
+                "请在 Base URL 填可达的 OpenAI 兼容中转端点" else ""
+            throw IOException(msg + extra)
+        }
     }
 }

@@ -331,8 +331,6 @@ class HermesRepository(
         }.sortedBy { it.clauseNumber ?: Int.MAX_VALUE }
     }
 
-    suspend fun formulaRules(): List<LocalClauseStore.FormulaRule> {
-        localStore.ensureLoaded()
-        return localStore.formulaRules()
-    }
+    suspend fun formulaRules(): List<LocalClauseStore.FormulaRule> =
+        localStore.formulaCatalog()
 }

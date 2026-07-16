@@ -1,9 +1,14 @@
 package org.impfai.hermes
 
 import android.app.Application
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
 import org.impfai.hermes.core.network.ApiClientFactory
 import org.impfai.hermes.core.settings.SettingsRepository
 import org.impfai.hermes.data.HermesRepository
+import org.impfai.hermes.engine.LibraryStore
 import org.impfai.hermes.engine.LocalClauseStore
 import org.impfai.hermes.engine.SkillStore
 
@@ -15,8 +20,10 @@ class AppContainer(app: Application) {
     val settings = SettingsRepository(app)
     val localStore = LocalClauseStore(app)
     val skillStore = SkillStore(app)
+    val libraryStore = LibraryStore(app)
     val apiFactory = ApiClientFactory()
     val repo = HermesRepository(settings, localStore, apiFactory)
+    val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 }
 
 class HermesApp : Application() {
@@ -26,5 +33,15 @@ class HermesApp : Application() {
     override fun onCreate() {
         super.onCreate()
         container = AppContainer(this)
+        // 啟動即預熱全部索引（後台 IO）：條文 BM25 + VIP 規則庫 + 古籍
+        // 編目——首次檢索不再付出解析成本，穩定毫秒級響應
+        container.appScope.launch {
+            runCatching {
+                container.localStore.ensureLoaded()
+                container.localStore.formulaCatalog()
+                container.localStore.sixChannelRules()
+                container.libraryStore.ensureCatalog()
+            }
+        }
     }
 }

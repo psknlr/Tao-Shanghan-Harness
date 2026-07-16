@@ -14,8 +14,8 @@ android {
         applicationId = "org.impfai.hermes"
         minSdk = 26
         targetSdk = 35
-        versionCode = 3
-        versionName = "1.2.0"
+        versionCode = 4
+        versionName = "1.3.0"
     }
 
     // standard：知識閱讀 + 服務端接入
@@ -100,6 +100,12 @@ val copyVipAssets = tasks.register<Copy>("copyVipAssets") {
     into("skills") {
         from(rootProject.file("../backend/data/skills/shanghanlun"))
     }
+    // 全量古籍庫（803 部 / 317MB；tools/prepare_library.md 生成，不入 git）
+    // library-pack 缺失時 VIP 照常構建，古籍庫界面顯示「未內置」
+    val libraryPack = rootProject.file("library-pack")
+    if (libraryPack.isDirectory) {
+        into("library") { from(libraryPack) }
+    }
     // Skill 索引文件：AssetManager.list() 對子目錄的行為因環境而異
     //（Robolectric 只返回文件），改為構建期生成清單，運行時直讀。
     // 文件名不得以下劃線開頭（AAPT 資產打包默認忽略 _* 模式）。
@@ -150,4 +156,5 @@ dependencies {
     testImplementation("androidx.test.ext:junit:1.2.1")
     testImplementation("androidx.test:core:1.6.1")
     testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

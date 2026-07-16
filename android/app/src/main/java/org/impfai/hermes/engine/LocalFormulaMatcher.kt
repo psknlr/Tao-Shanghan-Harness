@@ -175,7 +175,7 @@ object LocalFormulaMatcher {
                 matchedFindings = c.hits,
                 conflicts = c.conflicts.map { JsonPrimitive(it) },
                 contraindications = c.rule.contraindications.take(3)
-                    .map { JsonPrimitive(it) },
+                    .map { JsonPrimitive("${it.condition}（${it.clauseId}）") },
                 sourceLevel = c.rule.sourceLevel,
                 releaseLevel = c.rule.releaseLevel,
                 interpretationWarning = c.rule.interpretationWarning,

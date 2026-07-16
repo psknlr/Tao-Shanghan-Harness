@@ -28,6 +28,12 @@ import org.impfai.hermes.ui.agent.AgentScreen
 import org.impfai.hermes.ui.clause.ClauseScreen
 import org.impfai.hermes.ui.home.HomeScreen
 import org.impfai.hermes.ui.match.MatchScreen
+import org.impfai.hermes.ui.features.DifferentialScreen
+import org.impfai.hermes.ui.features.MistreatScreen
+import org.impfai.hermes.ui.features.TeachScreen
+import org.impfai.hermes.ui.features.TraceScreen
+import org.impfai.hermes.ui.library.LibraryScreen
+import org.impfai.hermes.ui.research.ResearchScreen
 import org.impfai.hermes.ui.search.SearchScreen
 import org.impfai.hermes.ui.settings.SettingsScreen
 import org.impfai.hermes.ui.skills.SkillsScreen
@@ -101,6 +107,7 @@ fun AppRoot() {
                     onOpenClause = { navController.openClause(it) },
                     onOpenSettings = { navController.navigate("settings") },
                     onOpenSkills = { navController.navigate("skills") },
+                    onOpenFeature = { navController.navigate(it) },
                 )
             }
             composable(
@@ -119,8 +126,14 @@ fun AppRoot() {
             composable("match") {
                 MatchScreen(onOpenClause = { navController.openClause(it) })
             }
-            composable("agent") {
-                AgentScreen(onOpenClause = { navController.openClause(it) })
+            composable(
+                route = "agent?prefill={prefill}",
+                arguments = listOf(navArgument("prefill") { defaultValue = "" }),
+            ) { entry ->
+                AgentScreen(
+                    onOpenClause = { navController.openClause(it) },
+                    prefill = entry.arguments?.getString("prefill") ?: "",
+                )
             }
             composable("settings") {
                 SettingsScreen()
@@ -131,10 +144,37 @@ fun AppRoot() {
                     clauseRef = ref,
                     onOpenClause = { navController.openClause(it) },
                     onBack = { navController.popBackStack() },
+                    onAskAi = { question ->
+                        navController.navigate(
+                            "agent?prefill=${android.net.Uri.encode(question)}")
+                    },
                 )
             }
             composable("skills") {
                 SkillsScreen(onBack = { navController.popBackStack() })
+            }
+            composable("teach") {
+                TeachScreen(onOpenClause = { navController.openClause(it) },
+                    onBack = { navController.popBackStack() })
+            }
+            composable("differential") {
+                DifferentialScreen(onOpenClause = { navController.openClause(it) },
+                    onBack = { navController.popBackStack() })
+            }
+            composable("mistreat") {
+                MistreatScreen(onOpenClause = { navController.openClause(it) },
+                    onBack = { navController.popBackStack() })
+            }
+            composable("research") {
+                ResearchScreen(onOpenClause = { navController.openClause(it) },
+                    onBack = { navController.popBackStack() })
+            }
+            composable("trace") {
+                TraceScreen(onOpenClause = { navController.openClause(it) },
+                    onBack = { navController.popBackStack() })
+            }
+            composable("library") {
+                LibraryScreen(onBack = { navController.popBackStack() })
             }
         }
     }

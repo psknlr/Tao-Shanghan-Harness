@@ -85,6 +85,44 @@ class LocalEngineTest {
     }
 
     @Test
+    fun formula_catalog_guizhitang_first_and_filterable() = runBlocking {
+        // 用戶實測問題：v1.2 方劑庫按規則 ID 排序，桂枝湯（33 條支持）
+        // 被埋沒——目錄按支持條文數降序後必須排第一
+        val catalog = store.formulaCatalog()
+        assertEquals("桂枝湯", catalog.first().formula)
+        assertTrue(catalog.first().composition.any { it.herb == "桂枝" })
+        // 語料方劑塊補全：目錄應覆蓋規則庫之外的方名
+        assertTrue(catalog.size >= 113)
+        // 簡體篩選可命中
+        val q = org.impfai.hermes.engine.TextNorm.normalizeQuery("桂枝汤")
+        assertTrue(catalog.any { it.formula.contains(q) })
+    }
+
+    @Test
+    fun search_is_millisecond_after_warmup() = runBlocking {
+        store.ensureLoaded()
+        store.search("預熱", topK = 1)
+        val t0 = System.nanoTime()
+        repeat(20) { store.search("往來寒熱 胸脅苦滿", topK = 8) }
+        val avgMs = (System.nanoTime() - t0) / 20 / 1_000_000.0
+        assertTrue("平均檢索耗時 ${avgMs}ms 應 < 50ms（JVM 下限遠高於真機）",
+            avgMs < 50)
+    }
+
+    @Test
+    fun vip_feature_rules_loaded() = runBlocking {
+        if (!BuildConfig.VIP) return@runBlocking
+        assertEquals(6, store.sixChannelRules().map { it.sixChannel }
+            .distinct().size.coerceAtMost(6))
+        assertTrue(store.differentialRules().isNotEmpty())
+        assertTrue(store.mistreatmentRules().isNotEmpty())
+        // 鑒別庫金標準：桂枝湯 vs 麻黃湯 對比組在冊
+        assertTrue(store.differentialRules().any {
+            "桂枝湯" in it.formulas && "麻黃湯" in it.formulas
+        })
+    }
+
+    @Test
     fun vip_skills_available() = runBlocking {
         val skills = org.impfai.hermes.engine.SkillStore(
             ApplicationProvider.getApplicationContext()).list()

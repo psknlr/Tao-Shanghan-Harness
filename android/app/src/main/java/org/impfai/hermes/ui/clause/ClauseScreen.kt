@@ -106,6 +106,7 @@ fun ClauseScreen(
     clauseRef: String,
     onOpenClause: (String) -> Unit,
     onBack: () -> Unit,
+    onAskAi: (question: String) -> Unit = {},
 ) {
     val container = rememberContainer()
     val vm: ClauseViewModel = viewModel(key = "clause-$clauseRef") {
@@ -200,6 +201,11 @@ fun ClauseScreen(
                         style = MaterialTheme.typography.bodyLarge.copy(
                             fontSize = 18.sp, lineHeight = 30.sp),
                     )
+                    TextButton(onClick = {
+                        val label = d.clauseNumber?.let { "第${it}条" } ?: d.clauseId
+                        onAskAi("请解读《伤寒论》$label：「${d.text}」" +
+                            "——病机、方证要点与相近条文的鉴别。")
+                    }) { Text("✦ AI 解读 / 围绕本条对话") }
                 }
             }
 

@@ -69,6 +69,9 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         val llmBaseUrl: String = "",
         val llmModel: String = "",
         val llmSaved: Boolean = false,
+        val llmTesting: Boolean = false,
+        val llmTestResult: String = "",
+        val llmTestOk: Boolean = false,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -106,6 +109,22 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
             container.settings.setLlm(st.llmProvider, st.llmApiKey,
                 st.llmBaseUrl, st.llmModel)
             _state.value = _state.value.copy(llmSaved = true)
+        }
+    }
+
+    fun testLlm() {
+        viewModelScope.launch {
+            val st = _state.value
+            _state.value = st.copy(llmTesting = true, llmTestResult = "")
+            container.settings.setLlm(st.llmProvider, st.llmApiKey,
+                st.llmBaseUrl, st.llmModel)   // 先保存再測：測的就是將用的配置
+            val r = DirectLlm.testConnection(st.llmProvider, st.llmApiKey,
+                st.llmBaseUrl, st.llmModel)
+            _state.value = _state.value.copy(
+                llmTesting = false, llmSaved = true,
+                llmTestOk = r.isSuccess,
+                llmTestResult = r.getOrElse { it.message ?: "测试失败" },
+            )
         }
     }
 
@@ -312,8 +331,17 @@ fun SettingsScreen() {
                     placeholder = { Text(DirectLlm.defaultModel(state.llmProvider)) },
                     singleLine = true,
                 )
-                Button(onClick = vm::saveLlm) {
-                    Text(if (state.llmSaved) "已保存" else "保存模型配置")
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = vm::saveLlm) {
+                        Text(if (state.llmSaved) "已保存" else "保存模型配置")
+                    }
+                    OutlinedButton(onClick = vm::testLlm,
+                        enabled = !state.llmTesting) {
+                        Text(if (state.llmTesting) "测试中…" else "测试模型连接")
+                    }
+                }
+                if (state.llmTestResult.isNotBlank()) {
+                    NoticeBar(state.llmTestResult, warning = !state.llmTestOk)
                 }
                 Text(
                     "直连模式流程：本地 BM25 检索证据条文 → 大模型基于证据作答 → " +

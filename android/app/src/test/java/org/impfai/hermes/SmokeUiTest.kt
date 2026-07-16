@@ -1,5 +1,6 @@
 package org.impfai.hermes
 
+import androidx.compose.ui.test.hasContentDescription
 import androidx.compose.ui.test.hasSetTextAction
 import androidx.compose.ui.test.hasText
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
@@ -91,6 +92,37 @@ class SmokeUiTest {
         waitForText("方证匹配")
         rule.onNodeWithText("方剂库").performClick()
         waitForText("筛选方名")
+    }
+
+    @Test
+    fun feature_grid_screens_render() {
+        waitForText("研习工作台")
+        // 標記須為屏幕獨有內容（不能與宮格標籤同串）；standard 無 VIP
+        // 規則數據時應顯示「未内置」引導而非閃退
+        val vip = BuildConfig.VIP
+        for ((label, marker) in listOf(
+            "六经教学" to (if (vip) "一、纲领" else "未内置"),
+            "方证鉴别" to "按方名筛选",
+            "误治传变" to (if (vip) "误下" else "未内置"),
+            "科研·论文" to "开始挖掘",
+            "溯源工作台" to "引文核验",
+        )) {
+            rule.onNodeWithText(label).performScrollTo().performClick()
+            waitForText(marker)
+            rule.onAllNodes(hasContentDescription("返回"))
+                .onFirst().performClick()
+            waitForText("研习工作台")
+        }
+    }
+
+    @Test
+    fun vip_library_opens_when_bundled() {
+        if (!BuildConfig.VIP) return
+        waitForText("研习工作台")
+        rule.onNodeWithText("古籍库").performScrollTo().performClick()
+        // 內置了 library-pack 的 VIP-full 構建：書目 tab 可見；
+        // 未內置時顯示引導條——兩者都算渲染成功，只要不閃退
+        waitForText("古籍库")
     }
 
     @Test

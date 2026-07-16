@@ -6,3 +6,6 @@ local.properties
 captures/
 .externalNativeBuild/
 .cxx/
+
+# 全量古籍庫包（317MB，不入庫；tools/prepare_library.md 說明如何生成）
+library-pack/
