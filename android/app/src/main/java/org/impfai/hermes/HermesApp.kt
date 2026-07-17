@@ -1,6 +1,8 @@
 package org.impfai.hermes
 
 import android.app.Application
+import java.io.File
+import org.impfai.hermes.core.audit.AuditLog
 import org.impfai.hermes.core.network.ApiClientFactory
 import org.impfai.hermes.core.settings.SettingsRepository
 import org.impfai.hermes.data.HermesRepository
@@ -14,7 +16,8 @@ class AppContainer(app: Application) {
     val settings = SettingsRepository(app)
     val localStore = LocalClauseStore(app)
     val apiFactory = ApiClientFactory()
-    val repo = HermesRepository(settings, localStore, apiFactory)
+    val auditLog = AuditLog(File(app.filesDir, "audit"))
+    val repo = HermesRepository(settings, localStore, apiFactory, auditLog)
 }
 
 class HermesApp : Application() {

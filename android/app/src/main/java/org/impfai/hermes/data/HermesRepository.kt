@@ -1,5 +1,6 @@
 package org.impfai.hermes.data
 
+import org.impfai.hermes.core.audit.AuditLog
 import org.impfai.hermes.core.model.AgentData
 import org.impfai.hermes.core.model.AgentRequest
 import org.impfai.hermes.core.model.ClauseDetail
@@ -60,6 +61,8 @@ class HermesRepository(
     private val settingsRepo: SettingsRepository,
     private val localStore: LocalClauseStore,
     private val apiFactory: ApiClientFactory,
+    /** 本機審計軌跡（評審建議七）：null = 不記錄（測試用）。 */
+    private val auditLog: AuditLog? = null,
 ) {
 
     private suspend fun api(): Pair<HermesApi, String?> {
@@ -148,7 +151,9 @@ class HermesRepository(
             return RepoResult.Error(
                 "OFFLINE", "方证匹配需要连接 Hermes 服务端（离线模式已开启）")
         }
-        return withApi { api, role ->
+        var requestedRole = ""
+        val result = withApi<MatchData> { api, role ->
+            requestedRole = role ?: ""
             when (val r = safeCall {
                 api.match(MatchRequest(symptoms = symptoms, pulse = pulse,
                     sixChannel = sixChannel?.takeIf { it.isNotBlank() }, role = role))
@@ -161,14 +166,33 @@ class HermesRepository(
                 is ApiResult.Offline -> RepoResult.Error("OFFLINE", "无法连接服务端：${r.message}")
             }
         }
+        auditMatch(symptoms, pulse, sixChannel, requestedRole, result)
+        return result
     }
 
-    suspend fun agent(question: String): RepoResult<AgentData> {
+    /**
+     * 智能體問答。
+     * @param roleOverride 會話模式的角色請求（評審建議十：模式 = 服務端
+     *   真實存在的角色面 + 推理深度，客戶端不虛構後端沒有的檔位）；
+     *   null 時沿用「我的」頁配置的角色。提權請求由服務端裁定拒絕。
+     * @param maxSteps 推理深度（服務端裁剪至 1..12）。
+     */
+    suspend fun agent(
+        question: String,
+        roleOverride: String? = null,
+        maxSteps: Int = 5,
+    ): RepoResult<AgentData> {
         if (offlineOnly()) {
             return RepoResult.Error("OFFLINE", "智能体需要连接 Hermes 服务端（离线模式已开启）")
         }
-        return withApi { api, role ->
-            when (val r = safeCall { api.agent(AgentRequest(question = question, role = role)) }) {
+        var requestedRole = ""
+        val result = withApi<AgentData> { api, role ->
+            val effRole = roleOverride?.takeIf { it.isNotBlank() } ?: role
+            requestedRole = effRole ?: ""
+            when (val r = safeCall {
+                api.agent(AgentRequest(question = question,
+                    maxSteps = maxSteps.coerceIn(1, 12), role = effRole))
+            }) {
                 is ApiResult.Success ->
                     r.data.errorMessage?.let {
                         RepoResult.Error("SERVER_MESSAGE", it)
@@ -177,6 +201,90 @@ class HermesRepository(
                 is ApiResult.Offline -> RepoResult.Error("OFFLINE", "无法连接服务端：${r.message}")
             }
         }
+        auditAgent(question, requestedRole, result)
+        return result
+    }
+
+    // ------------------------------------------------------------ audit
+
+    private suspend fun auditAgent(
+        question: String,
+        requestedRole: String,
+        result: RepoResult<AgentData>,
+    ) {
+        val log = auditLog ?: return
+        val entry = when (result) {
+            is RepoResult.Data -> {
+                val d = result.value
+                val report = d.citationReport
+                AuditLog.Entry(
+                    caseId = AuditLog.newCaseId(),
+                    ts = AuditLog.timestamp(),
+                    kind = "agent",
+                    input = question.take(500),
+                    requestedRole = requestedRole,
+                    effectiveRole = result.meta?.effectiveRole,
+                    backend = d.backend ?: result.meta?.backend ?: "",
+                    evidence = d.evidenceClauseIds,
+                    verdict = when {
+                        d.refused -> "安全闸门拒答"
+                        report != null && report.ok ->
+                            "引用已核验 ${report.verified.size} 条"
+                        report != null && report.hasAnyCitation -> "引用部分核验"
+                        else -> "无引用"
+                    },
+                    refused = d.refused,
+                )
+            }
+            is RepoResult.Error -> AuditLog.Entry(
+                caseId = AuditLog.newCaseId(),
+                ts = AuditLog.timestamp(),
+                kind = "agent",
+                input = question.take(500),
+                requestedRole = requestedRole,
+                verdict = "请求失败",
+                resultCode = result.code,
+            )
+        }
+        log.record(entry)
+    }
+
+    private suspend fun auditMatch(
+        symptoms: List<String>,
+        pulse: List<String>,
+        sixChannel: String?,
+        requestedRole: String,
+        result: RepoResult<MatchData>,
+    ) {
+        val log = auditLog ?: return
+        val input = buildString {
+            append(symptoms.joinToString("、"))
+            if (pulse.isNotEmpty()) append(" · 脉：${pulse.joinToString("、")}")
+            sixChannel?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+        }.take(500)
+        val entry = when (result) {
+            is RepoResult.Data -> AuditLog.Entry(
+                caseId = AuditLog.newCaseId(),
+                ts = AuditLog.timestamp(),
+                kind = "match",
+                input = input,
+                requestedRole = requestedRole,
+                effectiveRole = result.meta?.effectiveRole,
+                backend = result.meta?.backend ?: "",
+                evidence = result.value.matchedFormulaPatterns.map { it.formula },
+                verdict = "匹配 ${result.value.matchCount} 方",
+            )
+            is RepoResult.Error -> AuditLog.Entry(
+                caseId = AuditLog.newCaseId(),
+                ts = AuditLog.timestamp(),
+                kind = "match",
+                input = input,
+                requestedRole = requestedRole,
+                verdict = "请求失败",
+                resultCode = result.code,
+            )
+        }
+        log.record(entry)
     }
 
     /** 首頁/設置頁狀態卡：health + whoami + content manifest。 */

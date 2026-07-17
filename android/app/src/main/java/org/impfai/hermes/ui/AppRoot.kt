@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -24,6 +25,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import org.impfai.hermes.R
 import org.impfai.hermes.ui.agent.AgentScreen
 import org.impfai.hermes.ui.clause.ClauseScreen
 import org.impfai.hermes.ui.home.HomeScreen
@@ -33,16 +35,17 @@ import org.impfai.hermes.ui.settings.SettingsScreen
 
 data class TopDestination(
     val route: String,
-    val label: String,
+    /** 標籤走資源（i18n 起步，外部評審建議十三）。 */
+    val labelRes: Int,
     val icon: ImageVector,
 )
 
 val TOP_DESTINATIONS = listOf(
-    TopDestination("home", "首页", Icons.Filled.Home),
-    TopDestination("search", "检索", Icons.Filled.Search),
-    TopDestination("match", "辨证", Icons.AutoMirrored.Filled.MenuBook),
-    TopDestination("agent", "智能体", Icons.Filled.SmartToy),
-    TopDestination("settings", "我的", Icons.Filled.Person),
+    TopDestination("home", R.string.tab_home, Icons.Filled.Home),
+    TopDestination("search", R.string.tab_search, Icons.Filled.Search),
+    TopDestination("match", R.string.tab_bianzheng, Icons.AutoMirrored.Filled.MenuBook),
+    TopDestination("agent", R.string.tab_agent, Icons.Filled.SmartToy),
+    TopDestination("settings", R.string.tab_settings, Icons.Filled.Person),
 )
 
 fun NavHostController.openClause(clauseRef: String) {
@@ -69,6 +72,7 @@ fun AppRoot() {
             NavigationBar {
                 TOP_DESTINATIONS.forEach { dest ->
                     val selected = currentRoute?.startsWith(dest.route) == true
+                    val label = stringResource(dest.labelRes)
                     NavigationBarItem(
                         selected = selected,
                         onClick = {
@@ -80,8 +84,8 @@ fun AppRoot() {
                                 restoreState = true
                             }
                         },
-                        icon = { Icon(dest.icon, contentDescription = dest.label) },
-                        label = { Text(dest.label) },
+                        icon = { Icon(dest.icon, contentDescription = label) },
+                        label = { Text(label) },
                     )
                 }
             }
@@ -95,10 +99,21 @@ fun AppRoot() {
             modifier = Modifier.padding(padding).consumeWindowInsets(padding),
         ) {
             composable("home") {
+                val openTab: (String) -> Unit = { route ->
+                    navController.navigate(route) {
+                        popUpTo(navController.graph.findStartDestination().id) {
+                            saveState = true
+                        }
+                        launchSingleTop = true
+                        restoreState = true
+                    }
+                }
                 HomeScreen(
                     onOpenSearch = { q, ch -> navController.openSearch(q, ch) },
                     onOpenClause = { navController.openClause(it) },
-                    onOpenSettings = { navController.navigate("settings") },
+                    onOpenSettings = { openTab("settings") },
+                    onOpenAgent = { openTab("agent") },
+                    onOpenMatch = { openTab("match") },
                 )
             }
             composable(

@@ -24,12 +24,15 @@ import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -44,12 +47,21 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.impfai.hermes.AppContainer
 import org.impfai.hermes.BuildConfig
+import org.impfai.hermes.R
+import org.impfai.hermes.core.audit.AuditLog
 import org.impfai.hermes.core.settings.AppSettings
 import org.impfai.hermes.data.ServerStatus
 import org.impfai.hermes.ui.common.NoticeBar
 import org.impfai.hermes.ui.common.SectionCard
 import org.impfai.hermes.ui.common.rememberContainer
 
+/**
+ * 「我的」頁（外部評審建議五/七/九落地）：
+ * - 身份與角色前置——普通用戶先選「我是誰」，服務端地址/令牌歸入
+ *   「服務端接入」小節（工程配置不再是頁面第一印象）；
+ * - 訪問令牌經 Android Keystore 加密存儲，Keystore 不可用時明示降級；
+ * - 諮詢審計記錄（本機）：每次智能體問答/方證匹配的證據軌跡可回看。
+ */
 class SettingsViewModel(private val container: AppContainer) : ViewModel() {
     data class UiState(
         val loaded: Boolean = false,
@@ -58,10 +70,13 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         val role: String = "student",
         val simplified: Boolean = true,
         val offlineOnly: Boolean = false,
+        val secureStorage: Boolean = true,
         val testing: Boolean = false,
         val testResult: String = "",
         val testOk: Boolean = false,
         val saved: Boolean = false,
+        val auditCount: Int = 0,
+        val auditEntries: List<AuditLog.Entry> = emptyList(),
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -73,8 +88,9 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
             _state.value = UiState(
                 loaded = true, baseUrl = s.baseUrl, token = s.apiToken,
                 role = s.requestedRole, simplified = s.simplifiedDisplay,
-                offlineOnly = s.offlineOnly,
+                offlineOnly = s.offlineOnly, secureStorage = s.secureTokenStorage,
             )
+            loadAudit()
         }
     }
 
@@ -106,6 +122,22 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         viewModelScope.launch {
             container.settings.setOfflineOnly(on)
             _state.value = _state.value.copy(offlineOnly = on)
+        }
+    }
+
+    fun loadAudit() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                auditCount = container.auditLog.count(),
+                auditEntries = container.auditLog.recent(20),
+            )
+        }
+    }
+
+    fun clearAudit() {
+        viewModelScope.launch {
+            container.auditLog.clear()
+            loadAudit()
         }
     }
 
@@ -141,6 +173,7 @@ fun SettingsScreen() {
     val vm: SettingsViewModel = viewModel { SettingsViewModel(container) }
     val state by vm.state.collectAsStateWithLifecycle()
     var showToken by remember { mutableStateOf(false) }
+    var showAudit by remember { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -149,15 +182,35 @@ fun SettingsScreen() {
             .padding(16.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Text("我的", style = MaterialTheme.typography.headlineSmall,
+        Text(stringResource(R.string.tab_settings),
+            style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold)
 
-        SectionCard("服务端接入（API 设置）") {
+        // 身份前置（評審建議九的改進式落地：完整賬號體系依賴服務端
+        // OIDC，先把「我是誰」從工程配置里拆出來放到第一位）
+        SectionCard(stringResource(R.string.settings_identity)) {
+            Text(stringResource(R.string.settings_identity_caption),
+                style = MaterialTheme.typography.labelMedium)
+            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                AppSettings.ROLES.forEach { r ->
+                    FilterChip(
+                        selected = state.role == r,
+                        onClick = { vm.edit(role = r); vm.save() },
+                        label = { Text(AppSettings.ROLE_LABELS[r] ?: r) },
+                    )
+                }
+            }
+            Text(stringResource(R.string.settings_identity_note),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+
+        SectionCard(stringResource(R.string.settings_server)) {
             OutlinedTextField(
                 value = state.baseUrl,
                 onValueChange = { vm.edit(baseUrl = it) },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("服务端地址") },
+                label = { Text(stringResource(R.string.settings_server_url)) },
                 placeholder = { Text("https://hermes.example.org/") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
@@ -166,7 +219,7 @@ fun SettingsScreen() {
                 value = state.token,
                 onValueChange = { vm.edit(token = it) },
                 modifier = Modifier.fillMaxWidth(),
-                label = { Text("访问令牌（HERMES_API_KEYS 角色绑定 Key）") },
+                label = { Text(stringResource(R.string.settings_token)) },
                 singleLine = true,
                 visualTransformation = if (showToken) VisualTransformation.None
                 else PasswordVisualTransformation(),
@@ -180,21 +233,14 @@ fun SettingsScreen() {
                     }
                 },
             )
-            Text("请求角色（真实角色上限由服务端令牌绑定，不可越级）",
-                style = MaterialTheme.typography.labelMedium)
-            FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                AppSettings.ROLES.forEach { r ->
-                    FilterChip(
-                        selected = state.role == r,
-                        onClick = { vm.edit(role = r) },
-                        label = { Text(AppSettings.ROLE_LABELS[r] ?: r) },
-                    )
-                }
-            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(onClick = vm::save) { Text(if (state.saved) "已保存" else "保存") }
+                Button(onClick = vm::save) {
+                    Text(if (state.saved) stringResource(R.string.settings_saved)
+                    else stringResource(R.string.settings_save))
+                }
                 OutlinedButton(onClick = vm::test, enabled = !state.testing) {
-                    Text(if (state.testing) "测试中…" else "测试连接")
+                    Text(if (state.testing) stringResource(R.string.settings_testing)
+                    else stringResource(R.string.settings_test))
                 }
             }
             if (state.testResult.isNotBlank()) {
@@ -202,25 +248,33 @@ fun SettingsScreen() {
             }
             if (state.baseUrl.startsWith("http://")) {
                 Text(
-                    "当前为明文 HTTP 地址：仅限开发调试（Release 版禁止明文流量），" +
-                        "生产环境请使用 HTTPS。",
+                    stringResource(R.string.settings_http_warning),
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error,
                 )
             }
+            // 令牌存儲安全狀態（評審建議五）
             Text(
-                "本应用不保存任何模型供应商密钥（OpenAI/Anthropic 等仅存在于服务端）；" +
-                    "此处令牌只是 Hermes 服务端签发的角色绑定访问 Key。",
+                if (state.secureStorage) stringResource(R.string.settings_token_secure)
+                else stringResource(R.string.settings_token_insecure),
+                style = MaterialTheme.typography.labelSmall,
+                color = if (state.secureStorage)
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.error,
+            )
+            Text(
+                stringResource(R.string.settings_no_provider_keys),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
 
-        SectionCard("显示") {
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        SectionCard(stringResource(R.string.settings_display)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("简体显示", style = MaterialTheme.typography.bodyMedium)
-                    Text("原文以繁体为准，仅显示层转换",
+                    Text(stringResource(R.string.settings_simplified),
+                        style = MaterialTheme.typography.bodyMedium)
+                    Text(stringResource(R.string.settings_simplified_note),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -228,12 +282,12 @@ fun SettingsScreen() {
             }
         }
 
-        SectionCard("离线") {
-            Row(verticalAlignment = androidx.compose.ui.Alignment.CenterVertically) {
+        SectionCard(stringResource(R.string.settings_offline)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("仅离线模式", style = MaterialTheme.typography.bodyMedium)
-                    Text("只用 APK 内置语料：条文检索/阅读/方剂库可用；" +
-                        "方证匹配、智能体、注家异文等需要服务端",
+                    Text(stringResource(R.string.settings_offline_only),
+                        style = MaterialTheme.typography.bodyMedium)
+                    Text(stringResource(R.string.settings_offline_note),
                         style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
@@ -241,23 +295,82 @@ fun SettingsScreen() {
             }
         }
 
-        SectionCard("关于") {
+        // 諮詢審計記錄（評審建議七：本機審計軌跡）
+        SectionCard(stringResource(R.string.settings_audit)) {
+            Text(
+                stringResource(R.string.settings_audit_note, state.auditCount),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    showAudit = !showAudit
+                    if (showAudit) vm.loadAudit()
+                }) {
+                    Text(if (showAudit) stringResource(R.string.settings_audit_hide)
+                    else stringResource(R.string.settings_audit_show))
+                }
+                if (state.auditCount > 0) {
+                    TextButton(onClick = vm::clearAudit) {
+                        Text(stringResource(R.string.settings_audit_clear),
+                            color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+            if (showAudit) {
+                if (state.auditEntries.isEmpty()) {
+                    Text(stringResource(R.string.settings_audit_empty),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                state.auditEntries.forEach { e ->
+                    Column(Modifier.padding(vertical = 4.dp)) {
+                        Text(
+                            "${e.caseId} · ${if (e.kind == "agent") "智能体" else "方证匹配"}" +
+                                (e.effectiveRole ?: e.requestedRole)
+                                    .takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(e.input,
+                            style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2)
+                        Text(
+                            buildString {
+                                append(e.verdict)
+                                if (e.resultCode != "OK") append(" · ${e.resultCode}")
+                                if (e.backend.isNotBlank()) append(" · ${e.backend}")
+                                if (e.evidence.isNotEmpty()) {
+                                    append(" · 证据 ${e.evidence.size} 条")
+                                }
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (e.refused || e.resultCode != "OK")
+                                MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        HorizontalDivider(Modifier.padding(top = 4.dp))
+                    }
+                }
+            }
+        }
+
+        SectionCard(stringResource(R.string.settings_about)) {
             Text("伤寒Hermes v${BuildConfig.VERSION_NAME}",
                 style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold)
-            Text("研发者：医哲未来人工智能研究院（IMPF-AI）",
+            Text(stringResource(R.string.settings_about_dev,
+                stringResource(R.string.developer_name)),
                 style = MaterialTheme.typography.bodyMedium)
             HorizontalDivider()
             Text(
-                "架构：Android 原生客户端（可信交互端 + 离线知识端）+ " +
-                    "Hermes Python 平台（权威推理端、治理端、证据端）。" +
-                    "所有临床辅助推理、角色裁定、患者投影与引用核验均在服务端执行。",
+                stringResource(R.string.settings_about_arch),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
             Text(
-                "免责声明：本应用是中医古籍学习与研究辅助工具，不构成诊断或治疗建议；" +
-                    "是否属于某种证型、如何用药，请务必由执业中医师当面判断。",
+                stringResource(R.string.disclaimer),
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )

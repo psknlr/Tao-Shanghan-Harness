@@ -79,6 +79,7 @@ class LocalClauseStore(private val context: Context) {
     private var clauses: List<LocalClause> = emptyList()
     private var byId: Map<String, LocalClause> = emptyMap()
     private var byNumber: Map<Int, LocalClause> = emptyMap()
+    private var canonical: List<LocalClause> = emptyList()
     private var rules: List<FormulaRule> = emptyList()
     private val index = Bm25Index()
 
@@ -105,9 +106,10 @@ class LocalClauseStore(private val context: Context) {
                             .toList()
                     }
                 byId = clauses.associateBy { it.clauseId }
-                byNumber = clauses
+                canonical = clauses
                     .filter { it.textType == "original_clause" && it.clauseNumber != null }
-                    .associateBy { it.clauseNumber!! }
+                    .sortedBy { it.clauseNumber }
+                byNumber = canonical.associateBy { it.clauseNumber!! }
                 // 索引文本 = 正文 + 方劑塊原文（與 ClauseRAG 一致）
                 for (c in clauses) {
                     val blockText = c.formulaBlocks.joinToString("\n") { it.rawText }
@@ -127,6 +129,14 @@ class LocalClauseStore(private val context: Context) {
     fun byNumber(n: Int): LocalClause? = byNumber[n]
 
     fun formulaRules(): List<FormulaRule> = rules
+
+    /** 「今日條文」：按天確定性輪換核心條文（首頁產品化，評審建議八）。 */
+    fun dailyHit(epochDay: Long): SearchHit? {
+        if (canonical.isEmpty()) return null
+        val c = canonical[
+            org.impfai.hermes.core.model.dailyClauseIndex(epochDay, canonical.size)]
+        return toHit(c, 0.0, "daily")
+    }
 
     private val clauseNumQuery = Regex("第?(\\d{1,3})[條条]")
 
