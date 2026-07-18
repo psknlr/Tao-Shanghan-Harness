@@ -316,6 +316,8 @@ fun ReaderScreen(
     initialSection: String,
     locateText: String = "",
     onBack: () -> Unit,
+    /** 長按選句 →「AI 解读」：帶書名+選中原文跳智能體（空實現向後兼容）。 */
+    onAskAgent: (question: String) -> Unit = {},
 ) {
     val container = rememberContainer()
     val vm: ReaderViewModel = viewModel(
@@ -724,6 +726,20 @@ fun ReaderScreen(
                             }
                             sel = null
                         }) { Text("📝 批注") }
+                        TextButton(onClick = {
+                            if (oe > os) {
+                                val text = s.para.text
+                                    .display(state.simplified)
+                                    .substring(os, oe).take(300)
+                                val title = (state.unit?.title ?: titleOrId)
+                                    .display(state.simplified)
+                                onAskAgent(
+                                    "请解读《" + title + "》中的这段原文，" +
+                                        "说明其含义、医理与相关经典依据：「" +
+                                        text + "」")
+                            }
+                            sel = null
+                        }) { Text("🤖 解读") }
                         TextButton(onClick = { sel = null }) { Text("✕") }
                     }
                 }

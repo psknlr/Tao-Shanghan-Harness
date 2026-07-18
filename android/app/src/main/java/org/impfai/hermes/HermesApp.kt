@@ -7,6 +7,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import org.impfai.hermes.core.audit.AuditLog
+import org.impfai.hermes.core.chat.ChatHistoryStore
 import org.impfai.hermes.core.network.ApiClientFactory
 import org.impfai.hermes.core.settings.SettingsRepository
 import org.impfai.hermes.data.HermesRepository
@@ -27,6 +28,7 @@ class AppContainer(app: Application) {
     val annotationStore = AnnotationStore(app)
     val apiFactory = ApiClientFactory()
     val auditLog = AuditLog(File(app.filesDir, "audit"))
+    val chatHistory = ChatHistoryStore(File(app.filesDir, "chats"))
     val repo = HermesRepository(settings, localStore, apiFactory, auditLog)
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 }

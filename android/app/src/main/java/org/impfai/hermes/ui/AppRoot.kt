@@ -205,6 +205,10 @@ fun AppRoot() {
                     initialSection = entry.arguments?.getString("section") ?: "",
                     locateText = entry.arguments?.getString("locate") ?: "",
                     onBack = { navController.popBackStack() },
+                    onAskAgent = { question ->
+                        navController.navigate(
+                            "agent?prefill=${android.net.Uri.encode(question)}")
+                    },
                 )
             }
         }

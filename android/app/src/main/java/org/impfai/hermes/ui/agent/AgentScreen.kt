@@ -9,6 +9,7 @@ import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
@@ -22,17 +23,21 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -62,7 +67,9 @@ import androidx.compose.material3.FilterChip
 import org.impfai.hermes.AppContainer
 import org.impfai.hermes.BuildConfig
 import org.impfai.hermes.R
+import org.impfai.hermes.core.chat.ChatHistoryStore
 import org.impfai.hermes.core.model.AgentData
+import org.impfai.hermes.core.model.CitationReport
 import org.impfai.hermes.core.model.EvidenceCardData
 import org.impfai.hermes.core.model.TraceStepView
 import org.impfai.hermes.core.model.evidenceGradeForLayer
@@ -104,6 +111,10 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
          *  VIP 默認直連——純端側版本不依賴 Hermes 服務端。 */
         val source: String = if (BuildConfig.VIP) "direct" else "server",
         val directReady: Boolean = false,
+        /** 當前會話 id（空 = 尚未持久化的新會話）。 */
+        val sessionId: String = "",
+        /** 歷史會話列表（歷史面板數據）。 */
+        val history: List<ChatHistoryStore.Session> = emptyList(),
         /** 會話模式（角色請求映射，僅服務端通道生效）。 */
         val mode: String = "",
         /** 推理深度 max_steps（僅服務端通道生效）。 */
@@ -131,6 +142,113 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
     fun setDepth(depth: Int) {
         _state.value = _state.value.copy(depth = depth)
         viewModelScope.launch { container.settings.setAgentDepth(depth) }
+    }
+
+    // —— 聊天記錄（會話持久化 + 歷史查看）——
+
+    fun refreshHistory() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                history = container.chatHistory.list())
+        }
+    }
+
+    /** 新對話：清屏開新會話（舊會話已持久化，歷史裡可回看/續聊）。 */
+    fun newChat() {
+        if (_state.value.loading) return
+        _state.value = _state.value.copy(items = emptyList(), sessionId = "")
+    }
+
+    /** 載入歷史會話：消息回放進聊天框，繼續提問會續寫同一會話。 */
+    fun loadSession(id: String) {
+        if (_state.value.loading) return
+        viewModelScope.launch {
+            val sess = container.chatHistory.load(id) ?: return@launch
+            val items = sess.messages.map { m ->
+                when (m.role) {
+                    "user" -> ChatItem.User(m.text)
+                    "failure" -> ChatItem.Failure(m.text)
+                    else -> botItem(restoreAgentData(m))
+                }
+            }
+            _state.value = _state.value.copy(
+                items = items, sessionId = sess.id)
+        }
+    }
+
+    fun deleteSession(id: String) {
+        viewModelScope.launch {
+            container.chatHistory.delete(id)
+            if (_state.value.sessionId == id) {
+                _state.value = _state.value.copy(items = emptyList(), sessionId = "")
+            }
+            refreshHistory()
+        }
+    }
+
+    /** 歷史消息 → 最小 AgentData（引用狀態按存檔檔位重建，不虛構明細）。 */
+    private fun restoreAgentData(m: ChatHistoryStore.Message): AgentData {
+        val report = when (m.citation) {
+            "verified" -> CitationReport(
+                cited = m.evidence, verified = m.evidence,
+                hasAnyCitation = true, ok = true)
+            "partial" -> CitationReport(
+                cited = m.evidence, hasAnyCitation = true, ok = false)
+            else -> null
+        }
+        return AgentData(
+            refused = m.citation == "refused",
+            message = if (m.citation == "refused") m.answer else null,
+            answer = m.answer.takeIf { m.citation != "refused" },
+            backend = m.backend.takeIf { it.isNotBlank() },
+            evidenceClauseIds = m.evidence,
+            citationReport = report,
+        )
+    }
+
+    /** 每輪交互後全量落盤當前會話（覆蓋寫，含標題與更新時間）。 */
+    private suspend fun persistSession() {
+        val st = _state.value
+        val msgs = st.items.mapNotNull { item ->
+            when (item) {
+                is ChatItem.User -> ChatHistoryStore.Message(
+                    role = "user", text = item.text)
+                is ChatItem.Failure -> ChatHistoryStore.Message(
+                    role = "failure", text = item.message)
+                is ChatItem.Bot -> {
+                    val d = item.data
+                    val report = d.citationReport
+                    ChatHistoryStore.Message(
+                        role = "bot",
+                        answer = d.answer ?: d.message ?: "",
+                        backend = d.backend ?: "",
+                        evidence = d.evidenceClauseIds,
+                        citation = when {
+                            d.refused -> "refused"
+                            report != null && report.ok -> "verified"
+                            report != null && report.hasAnyCitation -> "partial"
+                            else -> "none"
+                        },
+                    )
+                }
+                is ChatItem.Streaming -> null
+            }
+        }
+        if (msgs.isEmpty()) return
+        val id = st.sessionId.ifBlank { ChatHistoryStore.newSessionId() }
+        if (st.sessionId.isBlank()) {
+            _state.value = _state.value.copy(sessionId = id)
+        }
+        val existing = container.chatHistory.load(id)
+        container.chatHistory.save(ChatHistoryStore.Session(
+            id = id,
+            createdTs = existing?.createdTs ?: ChatHistoryStore.timestamp(),
+            updatedTs = ChatHistoryStore.timestamp(),
+            title = st.items.filterIsInstance<ChatItem.User>()
+                .firstOrNull()?.text?.take(40) ?: "对话",
+            source = st.source,
+            messages = msgs,
+        ))
     }
 
     /** 證據條文 → 本地語料回查（摘錄/出處/分層），查不到只給跳轉。 */
@@ -205,6 +323,7 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
                 }
                 replaceLast(item)
                 _state.value = _state.value.copy(loading = false)
+                persistSession()
             } else {
                 val st = _state.value
                 val result = container.repo.agent(
@@ -217,12 +336,13 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
                 }
                 _state.value = _state.value.copy(
                     items = _state.value.items + item, loading = false)
+                persistSession()
             }
         }
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
 @Composable
 fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
     val container = rememberContainer()
@@ -230,6 +350,7 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
     val state by vm.state.collectAsStateWithLifecycle()
     // 條文頁「AI 解讀」帶入的預填問題；prefill 變化（換條文）時重置輸入
     var input by remember(prefill) { mutableStateOf(prefill) }
+    var showHistory by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
 
     LaunchedEffect(state.items.size, state.loading) {
@@ -247,6 +368,20 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
         ) {
             item {
                 Column(Modifier.padding(top = 12.dp)) {
+                    // 會話工具條：歷史查看 + 新對話（聊天記錄持久化在本機）
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("对话",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            modifier = Modifier.weight(1f))
+                        TextButton(onClick = {
+                            vm.refreshHistory(); showHistory = true
+                        }) { Text("🕘 历史") }
+                        TextButton(
+                            onClick = vm::newChat,
+                            enabled = !state.loading && state.items.isNotEmpty(),
+                        ) { Text("＋ 新对话") }
+                    }
                     if (BuildConfig.VIP) {
                         Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
                             FilterChip(
@@ -391,6 +526,76 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                 enabled = !state.loading && input.isNotBlank(),
             ) {
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送")
+            }
+        }
+    }
+
+    // —— 歷史會話面板（本機持久化：殺進程/換頁不丟）——
+    if (showHistory) {
+        ModalBottomSheet(onDismissRequest = { showHistory = false }) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 28.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text("历史对话（${state.history.size}）",
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold)
+                if (state.history.isEmpty()) {
+                    Text("暂无历史对话",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                LazyColumn(
+                    Modifier.heightIn(max = 440.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    items(state.history.size) { i ->
+                        val sess = state.history[i]
+                        Card(
+                            Modifier.fillMaxWidth().clickable {
+                                vm.loadSession(sess.id)
+                                showHistory = false
+                            },
+                            colors = CardDefaults.cardColors(
+                                containerColor = if (sess.id == state.sessionId)
+                                    MaterialTheme.colorScheme.primaryContainer
+                                        .copy(alpha = 0.4f)
+                                else MaterialTheme.colorScheme.surfaceVariant
+                                    .copy(alpha = 0.5f)),
+                        ) {
+                            Row(
+                                Modifier.padding(start = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                Column(
+                                    Modifier.weight(1f).padding(vertical = 10.dp),
+                                    verticalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Text(sess.title.ifBlank { "对话" },
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        fontWeight = FontWeight.SemiBold,
+                                        maxLines = 1)
+                                    Text(
+                                        ChatHistoryStore.shortTime(
+                                            sess.updatedTs.ifBlank { sess.createdTs }) +
+                                            " · ${sess.messages.size} 条" +
+                                            if (sess.source == "direct")
+                                                " · 直连" else " · 服务端",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                IconButton(onClick = { vm.deleteSession(sess.id) }) {
+                                    Icon(Icons.Filled.Delete,
+                                        contentDescription = "删除",
+                                        tint = MaterialTheme.colorScheme.outline)
+                                }
+                            }
+                        }
+                    }
+                }
             }
         }
     }

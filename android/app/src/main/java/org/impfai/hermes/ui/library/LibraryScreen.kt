@@ -45,6 +45,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
@@ -162,14 +163,46 @@ class LibraryViewModel(private val container: AppContainer) : ViewModel() {
     }
 }
 
-private val COVER_COLORS = listOf(
-    Color(0xFF2E5E4E), Color(0xFF7A4E7E), Color(0xFF9C6B30),
-    Color(0xFF3F5E8C), Color(0xFF8C4A3F), Color(0xFF4E6E32),
+/**
+ * 古籍裝幀配色（外部需求：書架封面要有中國古代設計感，分類各異）。
+ *
+ * 視覺原型是清代線裝書：布面書衣 + 左側裝訂線（四針眼）+ 竪排題簽
+ * （書名紙簽）+ 朱文小印（分類印章）。顏色按分類分八系，取傳統
+ * 礦植物色（赭石/竹月/藏青/紫檀/胭脂/黛青/絳紅/駝褐），飽和度壓低
+ * 貼近舊書質感。
+ */
+private data class CoverStyle(
+    val cloth: Color,       // 書衣主色
+    val clothDark: Color,   // 書衣暗部（漸變/裝訂邊）
 )
 
-private fun coverColor(u: LibraryStore.Unit_): Color =
-    COVER_COLORS[((u.category.hashCode() % COVER_COLORS.size) +
-        COVER_COLORS.size) % COVER_COLORS.size]
+private val COVER_PAPER = Color(0xFFF5EDD8)   // 題簽紙
+private val COVER_INK = Color(0xFF2A241C)     // 題簽墨字
+private val COVER_SEAL = Color(0xFFA63B2A)    // 朱文印
+
+private val STYLE_CLASSIC = CoverStyle(Color(0xFF7A5230), Color(0xFF573A1E))  // 赭石·經典
+private val STYLE_HERB = CoverStyle(Color(0xFF3E5C41), Color(0xFF2A4030))     // 竹月·本草
+private val STYLE_FORMULA = CoverStyle(Color(0xFF35507A), Color(0xFF223A5C)) // 藏青·方書
+private val STYLE_CASE = CoverStyle(Color(0xFF5C4059), Color(0xFF423043))     // 紫檀·醫案
+private val STYLE_WOMEN = CoverStyle(Color(0xFF8C4A52), Color(0xFF663036))    // 胭脂·婦兒
+private val STYLE_NEEDLE = CoverStyle(Color(0xFF3D5A66), Color(0xFF28424E))   // 黛青·針診
+private val STYLE_CLINIC = CoverStyle(Color(0xFF7A4A38), Color(0xFF573224))   // 絳紅·臨證
+private val STYLE_MISC = CoverStyle(Color(0xFF5C564A), Color(0xFF423E34))     // 駝褐·雜纂
+
+private fun coverStyle(category: String): CoverStyle {
+    fun hit(vararg keys: String) = keys.any { it in category }
+    return when {
+        hit("傷寒", "金匱", "內經", "難經", "經論") -> STYLE_CLASSIC
+        hit("本草", "炮製", "養生") -> STYLE_HERB
+        hit("方書", "綜合") -> STYLE_FORMULA
+        hit("醫案", "醫論") -> STYLE_CASE
+        hit("婦科", "兒科") -> STYLE_WOMEN
+        hit("針灸", "經穴", "脈法", "診法", "診治") -> STYLE_NEEDLE
+        hit("溫病", "內科", "外科", "傷科", "喉科", "眼科", "五官", "齒科") ->
+            STYLE_CLINIC
+        else -> STYLE_MISC
+    }
+}
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
@@ -289,7 +322,10 @@ private fun Bookshelf(
     }
 }
 
-/** 書封：分類色裝幀 + 竪排感標題 + 收藏星標。 */
+/**
+ * 線裝書封：布面書衣（分類色系）+ 左裝訂線與四針眼 + 竪排題簽書名 +
+ * 朱文分類印 + 收藏星標；簽下小字為朝代·作者。
+ */
 @Composable
 private fun BookCover(
     u: LibraryStore.Unit_,
@@ -300,38 +336,81 @@ private fun BookCover(
 ) {
     val w = if (compact) 88.dp else 100.dp
     val h = if (compact) 118.dp else 136.dp
-    val base = coverColor(u)
+    val style = coverStyle(u.category)
+    val titleChars = u.title.display(state.simplified)
+        .filter { !it.isWhitespace() }.take(8)
+    val sealChar = u.category.display(state.simplified)
+        .firstOrNull { !it.isWhitespace() } ?: '醫'
     Column(Modifier.width(w)) {
         Box(
             Modifier
                 .width(w).height(h)
                 .background(
-                    Brush.verticalGradient(listOf(base, base.copy(alpha = 0.75f))),
-                    RoundedCornerShape(6.dp))
+                    Brush.horizontalGradient(
+                        listOf(style.clothDark, style.cloth, style.cloth)),
+                    RoundedCornerShape(4.dp))
                 .clickable { onOpen() },
         ) {
-            Column(
-                Modifier.align(Alignment.Center).padding(horizontal = 8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
+            // 裝訂邊：暗色細條 + 四針眼（線裝視覺）
+            Box(
+                Modifier.align(Alignment.CenterStart)
+                    .width(9.dp).height(h)
+                    .background(style.clothDark,
+                        RoundedCornerShape(topStart = 4.dp, bottomStart = 4.dp)),
             ) {
-                Text(
-                    u.title.display(state.simplified),
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = FontWeight.Bold,
-                    color = Color(0xFFF5EFE0),
-                    textAlign = TextAlign.Center,
-                    maxLines = 4, overflow = TextOverflow.Ellipsis,
-                )
-                if (u.dynasty.isNotBlank() || u.author.isNotBlank()) {
+                Column(
+                    Modifier.fillMaxSize().padding(vertical = 10.dp),
+                    verticalArrangement = Arrangement.SpaceBetween,
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                ) {
+                    repeat(4) {
+                        Box(
+                            Modifier.width(3.dp).height(3.dp)
+                                .background(COVER_PAPER.copy(alpha = 0.75f),
+                                    RoundedCornerShape(2.dp)))
+                    }
+                }
+            }
+            // 竪排題簽（書名紙簽，仿古籍簽條）
+            Column(
+                Modifier.align(Alignment.TopStart)
+                    .padding(start = 15.dp, top = 7.dp)
+                    .width(if (compact) 24.dp else 28.dp)
+                    .background(COVER_PAPER, RoundedCornerShape(2.dp))
+                    .padding(vertical = 6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(1.dp),
+            ) {
+                titleChars.forEach { ch ->
                     Text(
-                        listOf(u.dynasty, u.author).filter { it.isNotBlank() }
-                            .joinToString(" · ").display(state.simplified),
-                        style = MaterialTheme.typography.labelSmall,
-                        color = Color(0xCCF5EFE0),
-                        textAlign = TextAlign.Center,
-                        maxLines = 2, overflow = TextOverflow.Ellipsis,
+                        ch.toString(),
+                        color = COVER_INK,
+                        fontSize = if (compact) 11.sp else 12.sp,
+                        lineHeight = if (compact) 12.sp else 13.sp,
+                        fontWeight = FontWeight.SemiBold,
                     )
                 }
+            }
+            // 朱文分類印（不同分類印文不同）
+            Box(
+                Modifier.align(Alignment.BottomEnd)
+                    .padding(end = 6.dp, bottom = 6.dp)
+                    .width(20.dp).height(20.dp)
+                    .background(COVER_SEAL, RoundedCornerShape(3.dp)),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(sealChar.toString(), color = COVER_PAPER,
+                    fontSize = 11.sp, fontWeight = FontWeight.Bold)
+            }
+            // 朝代（書衣右上小字，簽外）
+            if (u.dynasty.isNotBlank()) {
+                Text(
+                    u.dynasty.display(state.simplified).take(2),
+                    color = COVER_PAPER.copy(alpha = 0.65f),
+                    fontSize = 9.sp,
+                    modifier = Modifier.align(Alignment.TopEnd)
+                        .padding(top = 40.dp, end = 9.dp),
+                )
             }
             IconButton(
                 onClick = { vm.toggleFavorite(u.id) },
@@ -342,15 +421,16 @@ private fun BookCover(
                     else Icons.Filled.StarBorder,
                     contentDescription = "收藏",
                     tint = if (u.id in state.favorites) Color(0xFFF3CE56)
-                    else Color(0x88FFFFFF),
+                    else Color(0x66FFFFFF),
                 )
             }
         }
         Text(
-            u.category.display(state.simplified),
+            listOf(u.category, u.author).filter { it.isNotBlank() }
+                .joinToString(" · ").display(state.simplified),
             style = MaterialTheme.typography.labelSmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1,
+            maxLines = 1, overflow = TextOverflow.Ellipsis,
         )
     }
 }
