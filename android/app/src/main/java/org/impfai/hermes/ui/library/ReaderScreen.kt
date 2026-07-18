@@ -388,9 +388,12 @@ fun ReaderScreen(
     // 翻頁即取消選中
     LaunchedEffect(pagerState.currentPage) { sel = null }
 
-    // 閱讀進度自動保存：翻頁即記錄，下次打開該書自動續讀
+    // 閱讀進度自動保存：翻頁即記錄，下次打開該書自動續讀。
+    // lastSavedPara 同時是重排（字號/簡繁）的回位錨點——排版中的
+    // 半成品頁列表不可作記錄源（v1.11 簡繁切換漂移修復）
     var lastSavedPara by remember { mutableStateOf(-1) }
-    LaunchedEffect(pagerState.currentPage, pages.size) {
+    LaunchedEffect(pagerState.currentPage, pages.size, paginating) {
+        if (paginating || pages.isEmpty()) return@LaunchedEffect
         val p = pages.getOrNull(pagerState.currentPage)
             ?.chunks?.firstOrNull()?.paraIndex ?: return@LaunchedEffect
         if (p != lastSavedPara) {
@@ -637,9 +640,15 @@ fun ReaderScreen(
                         return@LaunchedEffect
                     }
                     val newKey = "${state.unit?.id}|${state.section}"
-                    val anchor = if (newKey == contentKey) {
-                        pages.getOrNull(pagerState.currentPage)
-                            ?.chunks?.firstOrNull()?.paraIndex
+                    val sameContent = newKey == contentKey
+                    // 錨點取翻頁時持續記錄的段序（穩定），僅在缺失時才從
+                    // 當前頁列表反查——舊實現從可能是半成品的 pages 反查
+                    // 且帶 anchor>0 錯誤條件，快速多次簡繁切換（協程取消
+                    // 重啟）後回位失敗、pager 被鉗回首頁
+                    val anchor = if (sameContent) {
+                        lastSavedPara.takeIf { it >= 0 }
+                            ?: pages.getOrNull(pagerState.currentPage)
+                                ?.chunks?.firstOrNull()?.paraIndex
                     } else null
                     contentKey = newKey
                     paginating = true
@@ -677,7 +686,12 @@ fun ReaderScreen(
                                     } else {
                                         built.add(ReaderPage(cur))
                                         cur = ArrayList(); used = 0f
-                                        if (built.size - lastEmit >= 6) {
+                                        // 增量發布僅用於新開章節首屏加速；
+                                        // 同章重排（簡繁/字號）必須整體一次
+                                        // 換列表——半成品列表會把 pager 位置
+                                        // 鉗回小索引（v1.11 修復）
+                                        if (!sameContent &&
+                                            built.size - lastEmit >= 6) {
                                             pages = built.toList()
                                             lastEmit = built.size
                                         }
@@ -697,10 +711,9 @@ fun ReaderScreen(
                         pages = built.toList()
                     }
                     paginating = false
-                    // 字號/簡繁/續載重排後回到原閱讀位置
-                    if (anchor != null && anchor > 0 &&
-                        state.targetPara == null
-                    ) {
+                    // 字號/簡繁/續載重排後回到原閱讀位置（段序錨點；
+                    // 段 0 也是合法錨點——舊條件 anchor>0 會漏掉首段）
+                    if (anchor != null && state.targetPara == null) {
                         val idx = pages.indexOfFirst { p ->
                             p.chunks.any { it.paraIndex == anchor }
                         }

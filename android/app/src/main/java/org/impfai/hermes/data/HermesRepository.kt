@@ -430,10 +430,13 @@ class HermesRepository(
         fun fold(t: String) = TextNorm.foldVariants(TextNorm.s2t(t))
         val evidenceBooks = evidence.filter { it.sourceType == "library" }
             .map { fold(it.book) }.toSet()
-        val citedIds = reClauseId.findAll(answer)
+        // 引用核驗只掃正文——<think> 思考塊裡的引用不計入核驗面
+        val scanText = org.impfai.hermes.core.model.splitThink(answer).visible
+            .ifBlank { answer }
+        val citedIds = reClauseId.findAll(scanText)
             .map { it.value }.distinct().toList()
         val citedBooks = Regex("《([^》·]{1,25})(?:·[^》]{1,30})?》")
-            .findAll(answer).map { it.groupValues[1] }.distinct().toList()
+            .findAll(scanText).map { it.groupValues[1] }.distinct().toList()
         val verified = ArrayList<String>()
         val outside = ArrayList<String>()
         val unsupported = ArrayList<String>()
@@ -475,6 +478,14 @@ class HermesRepository(
             toolsUsed = tools,
             evidenceClauseIds = evidence
                 .filter { it.sourceType == "clause" }.map { it.clauseId },
+            directEvidence = evidence.map {
+                org.impfai.hermes.core.model.DirectEvidenceItem(
+                    sourceType = it.sourceType, ref = it.ref,
+                    book = it.book, section = it.section,
+                    excerpt = it.text.take(160),
+                    stars = it.grade.stars, label = it.grade.label,
+                    clauseId = it.clauseId)
+            },
             citationReport = report,
             safetyNotice = "直连模式：回答由第三方大模型生成，引用仅经本地核验" +
                 "（弱于服务端全链路证据闸门）；内容供文献学习参考，" +

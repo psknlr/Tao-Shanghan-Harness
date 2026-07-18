@@ -99,6 +99,26 @@ class AgentPresentationTest {
     }
 
     @Test
+    fun `splitThink separates blocks, streams, and passthrough`() {
+        // 無標籤：原樣
+        assertEquals(ThinkSplit("回答", "", false), splitThink("回答"))
+        // 閉合塊：正文/思考分離
+        val s1 = splitThink("<think>推理A</think>结论B")
+        assertEquals("结论B", s1.visible)
+        assertEquals("推理A", s1.think)
+        assertFalse(s1.inThink)
+        // 多塊 + thinking 變體
+        val s2 = splitThink("<think>甲</think>中<thinking>乙</thinking>尾")
+        assertEquals("中尾", s2.visible)
+        assertTrue(s2.think.contains("甲") && s2.think.contains("乙"))
+        // 流式未閉合尾塊
+        val s3 = splitThink("前言<think>还在想")
+        assertEquals("前言", s3.visible)
+        assertEquals("还在想", s3.think)
+        assertTrue(s3.inThink)
+    }
+
+    @Test
     fun `daily clause index is deterministic and in range`() {
         assertEquals(0, dailyClauseIndex(0, 398))
         assertEquals(398 - 1, dailyClauseIndex(397, 398))

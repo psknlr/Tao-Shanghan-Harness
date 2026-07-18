@@ -135,7 +135,67 @@ data class EvidenceCardData(
     val layer: String = "",
     val excerpt: String = "",
     val grade: EvidenceGrade = evidenceGradeForLayer(""),
+    /** clause | library（library = 歷代古籍書證，點擊開閱讀器）。 */
+    val sourceType: String = "clause",
+    val book: String = "",
+    val section: String = "",
 )
+
+// ---------------------------------------------------------------- think
+
+/** 模型思考標籤解析結果：正文 / 思考內容 / 是否仍在未閉合思考塊中。 */
+data class ThinkSplit(
+    val visible: String,
+    val think: String,
+    val inThink: Boolean,
+)
+
+private val THINK_OPEN = listOf("<think>", "<thinking>")
+private val THINK_CLOSE = listOf("</think>", "</thinking>")
+
+/**
+ * 拆分 `<think>…</think>`（兼容 `<thinking>`）：支持多塊與流式未閉合
+ * 尾塊（inThink=true 時 UI 顯示「思考中」）。無標籤時原文即正文。
+ */
+fun splitThink(text: String): ThinkSplit {
+    if (THINK_OPEN.none { text.contains(it) }) {
+        return ThinkSplit(text, "", false)
+    }
+    val visible = StringBuilder()
+    val think = StringBuilder()
+    var i = 0
+    var inThink = false
+    while (i < text.length) {
+        if (!inThink) {
+            val open = THINK_OPEN
+                .map { it to text.indexOf(it, i) }
+                .filter { it.second >= 0 }
+                .minByOrNull { it.second }
+            if (open == null) {
+                visible.append(text, i, text.length)
+                break
+            }
+            visible.append(text, i, open.second)
+            i = open.second + open.first.length
+            inThink = true
+        } else {
+            val close = THINK_CLOSE
+                .map { it to text.indexOf(it, i) }
+                .filter { it.second >= 0 }
+                .minByOrNull { it.second }
+            if (close == null) {
+                think.append(text, i, text.length)
+                return ThinkSplit(
+                    visible.toString().trim(), think.toString().trim(), true)
+            }
+            if (think.isNotEmpty()) think.append("\n")
+            think.append(text, i, close.second)
+            i = close.second + close.first.length
+            inThink = false
+        }
+    }
+    return ThinkSplit(visible.toString().trim(), think.toString().trim(), false)
+}
 
 // ---------------------------------------------------------------- home
 

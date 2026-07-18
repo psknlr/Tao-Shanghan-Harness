@@ -36,6 +36,8 @@ class ChatHistoryStore(
         val answer: String = "",
         val backend: String = "",
         val evidence: List<String> = emptyList(),
+        /** 歷代書證出處（《書名·章節》，v1.11 全庫證據）。 */
+        val sources: List<String> = emptyList(),
         /** verified | partial | none | refused | ""（非 bot）。 */
         val citation: String = "",
         val ts: String = "",

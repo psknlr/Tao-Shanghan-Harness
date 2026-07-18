@@ -137,6 +137,11 @@ fun AppRoot() {
                 AgentScreen(
                     onOpenClause = { navController.openClause(it) },
                     prefill = entry.arguments?.getString("prefill") ?: "",
+                    onOpenBook = { book, _, locate ->
+                        navController.navigate(
+                            "reader?title=${android.net.Uri.encode(book)}" +
+                                "&section=&locate=${android.net.Uri.encode(locate)}")
+                    },
                 )
             }
             composable("settings") {

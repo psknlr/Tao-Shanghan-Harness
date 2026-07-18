@@ -50,7 +50,7 @@ class HermesApp : Application() {
                 container.localStore.ensureLoaded()
                 container.localStore.formulaCatalog()
                 container.localStore.sixChannelRules()
-                container.libraryStore.ensureCatalog()
+                container.libraryStore.prewarmSearch()
             }
         }
     }

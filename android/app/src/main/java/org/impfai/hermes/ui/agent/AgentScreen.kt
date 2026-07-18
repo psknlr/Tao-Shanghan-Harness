@@ -85,10 +85,13 @@ import org.impfai.hermes.R
 import org.impfai.hermes.core.chat.ChatHistoryStore
 import org.impfai.hermes.core.model.AgentData
 import org.impfai.hermes.core.model.CitationReport
+import org.impfai.hermes.core.model.DirectEvidenceItem
 import org.impfai.hermes.core.model.EvidenceCardData
+import org.impfai.hermes.core.model.EvidenceGrade
 import org.impfai.hermes.core.model.TraceStepView
 import org.impfai.hermes.core.model.evidenceGradeForLayer
 import org.impfai.hermes.core.model.humanizeTrace
+import org.impfai.hermes.core.model.splitThink
 import org.impfai.hermes.core.model.starsText
 import org.impfai.hermes.core.settings.AppSettings
 import org.impfai.hermes.data.RepoResult
@@ -228,7 +231,9 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
                 is ChatItem.Bot -> {
                     val d = item.data
                     b += DocxWriter.Block.Para(
-                        (d.answer ?: d.message ?: "").display(st.simplified))
+                        splitThink(d.answer ?: d.message ?: "")
+                            .visible.ifBlank { d.answer ?: d.message ?: "" }
+                            .display(st.simplified))
                     val report = d.citationReport
                     b += DocxWriter.Block.Para(
                         "引用核验：" + when {
@@ -244,9 +249,14 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
                             listOf("证据条文", "出处", "证据等级", "原文摘录"),
                             item.evidence.map { ev ->
                                 listOf(
-                                    ev.clauseNumber?.let { "第 " + it + " 条" }
+                                    if (ev.sourceType == "library")
+                                        ("《" + ev.book + "》")
+                                            .display(st.simplified)
+                                    else ev.clauseNumber
+                                        ?.let { "第 " + it + " 条" }
                                         ?: ev.clauseId,
-                                    ev.chapter.display(st.simplified),
+                                    (if (ev.sourceType == "library") ev.section
+                                    else ev.chapter).display(st.simplified),
                                     ev.grade.label,
                                     ev.excerpt.display(st.simplified).take(80),
                                 )
@@ -282,6 +292,20 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
             backend = m.backend.takeIf { it.isNotBlank() },
             evidenceClauseIds = m.evidence,
             citationReport = report,
+            directEvidence = if (m.sources.isEmpty()) emptyList()
+            else buildList {
+                m.evidence.forEach {
+                    add(DirectEvidenceItem(
+                        sourceType = "clause", ref = it, clauseId = it))
+                }
+                m.sources.forEach { ref ->
+                    val inner = ref.removePrefix("《").removeSuffix("》")
+                    add(DirectEvidenceItem(
+                        sourceType = "library", ref = ref,
+                        book = inner.substringBefore('·'),
+                        section = inner.substringAfter('·', "")))
+                }
+            },
         )
     }
 
@@ -302,6 +326,9 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
                         answer = d.answer ?: d.message ?: "",
                         backend = d.backend ?: "",
                         evidence = d.evidenceClauseIds,
+                        sources = d.directEvidence
+                            .filter { it.sourceType == "library" }
+                            .map { it.ref },
                         citation = when {
                             d.refused -> "refused"
                             report != null && report.ok -> "verified"
@@ -353,11 +380,48 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
         }
     }
 
-    private suspend fun botItem(data: AgentData): ChatItem.Bot = ChatItem.Bot(
-        data,
-        evidence = resolveEvidence(data.evidenceClauseIds),
-        trace = humanizeTrace(data.agentTrace),
-    )
+    private suspend fun botItem(data: AgentData): ChatItem.Bot {
+        // 直連統一取證：證據卡直接來自 _direct_evidence（含歷代書證）；
+        // 服務端通道沿用條文 id 回查
+        val cards = if (data.directEvidence.isNotEmpty()) {
+            container.localStore.ensureLoaded()
+            data.directEvidence.take(10).map { d ->
+                if (d.sourceType == "clause") {
+                    val c = container.localStore.byId(d.clauseId)
+                    EvidenceCardData(
+                        clauseId = d.clauseId,
+                        clauseNumber = c?.clauseNumber,
+                        chapter = c?.chapter ?: d.section,
+                        sixChannel = c?.sixChannel,
+                        layer = c?.layer ?: "",
+                        excerpt = d.excerpt.ifBlank { c?.cleanText ?: "" },
+                        grade = if (d.label.isBlank())
+                            evidenceGradeForLayer(c?.layer ?: "")
+                        else EvidenceGrade(d.stars, d.label),
+                        sourceType = "clause",
+                    )
+                } else {
+                    EvidenceCardData(
+                        clauseId = "",
+                        chapter = d.section,
+                        excerpt = d.excerpt,
+                        grade = EvidenceGrade(
+                            d.stars, d.label.ifBlank { "书证" }),
+                        sourceType = "library",
+                        book = d.book,
+                        section = d.section,
+                    )
+                }
+            }
+        } else {
+            resolveEvidence(data.evidenceClauseIds)
+        }
+        return ChatItem.Bot(
+            data,
+            evidence = cards,
+            trace = humanizeTrace(data.agentTrace),
+        )
+    }
 
     fun setSource(source: String) {
         viewModelScope.launch {
@@ -435,7 +499,12 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
 @OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class,
     ExperimentalFoundationApi::class)
 @Composable
-fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
+fun AgentScreen(
+    onOpenClause: (String) -> Unit,
+    prefill: String = "",
+    /** 歷代書證點擊 → 閱讀器定位開卷（book, section, locate）。 */
+    onOpenBook: (String, String, String) -> Unit = { _, _, _ -> },
+) {
     val container = rememberContainer()
     val vm: AgentViewModel = viewModel { AgentViewModel(container) }
     val state by vm.state.collectAsStateWithLifecycle()
@@ -635,7 +704,8 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                         )
                     }
-                    is ChatItem.Bot -> BotCard(item, state.simplified, onOpenClause)
+                    is ChatItem.Bot -> BotCard(
+                        item, state.simplified, onOpenClause, onOpenBook)
                     is ChatItem.Streaming -> Card {
                         Column(Modifier.padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -653,9 +723,43 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                                     color = MaterialTheme.colorScheme.primary)
                             }
                             if (item.partial.isNotBlank()) {
-                                SelectionContainer {
-                                    Text(item.partial.display(state.simplified) + " ▌",
-                                        style = MaterialTheme.typography.bodyMedium)
+                                // <think> 流式拆分：思考塊實時展開顯示
+                                //（完成後由 BotCard 折疊為「思考過程」）
+                                val sp = splitThink(item.partial)
+                                if (sp.think.isNotBlank()) {
+                                    Column(
+                                        Modifier.fillMaxWidth().background(
+                                            MaterialTheme.colorScheme
+                                                .surfaceVariant.copy(alpha = 0.4f),
+                                            RoundedCornerShape(8.dp))
+                                            .padding(8.dp),
+                                        verticalArrangement =
+                                            Arrangement.spacedBy(2.dp),
+                                    ) {
+                                        Text(
+                                            if (sp.inThink) "🧠 模型思考中…"
+                                            else "🧠 思考过程（完成后折叠）",
+                                            style = MaterialTheme
+                                                .typography.labelSmall,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = MaterialTheme
+                                                .colorScheme.onSurfaceVariant)
+                                        Text(sp.think
+                                            .display(state.simplified),
+                                            style = MaterialTheme
+                                                .typography.labelSmall,
+                                            fontStyle = FontStyle.Italic,
+                                            color = MaterialTheme
+                                                .colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                                if (sp.visible.isNotBlank() || !sp.inThink) {
+                                    SelectionContainer {
+                                        Text(sp.visible
+                                            .display(state.simplified) + " ▌",
+                                            style = MaterialTheme
+                                                .typography.bodyMedium)
+                                    }
                                 }
                             } else {
                                 Row(verticalAlignment = Alignment.CenterVertically,
@@ -834,8 +938,11 @@ private fun BotCard(
     item: ChatItem.Bot,
     simplified: Boolean,
     onOpenClause: (String) -> Unit,
+    onOpenBook: (String, String, String) -> Unit = { _, _, _ -> },
 ) {
     val data = item.data
+    // <think> 拆分：正文與思考過程分離，思考完成後默認折疊
+    val split = splitThink(data.answer ?: data.message ?: "")
     if (data.refused) {
         Card(
             colors = CardDefaults.cardColors(
@@ -882,12 +989,11 @@ private fun BotCard(
                         color = MaterialTheme.colorScheme.outline)
                 }
                 Spacer(Modifier.weight(1f))
-                // 一鍵複製整段回答
+                // 一鍵複製整段回答（僅正文，不含思考過程）
                 IconButton(
                     onClick = {
                         clipboard.setText(AnnotatedString(
-                            (data.answer ?: data.message ?: "")
-                                .display(simplified)))
+                            split.visible.display(simplified)))
                     },
                     modifier = Modifier.size(28.dp),
                 ) {
@@ -898,10 +1004,17 @@ private fun BotCard(
                 }
             }
 
+            // 思考過程（<think> 標籤內容）：完成後折疊，點擊展開
+            if (split.think.isNotBlank()) {
+                ThinkSection(split.think, simplified)
+            }
+
             // 結論（SelectionContainer：可長按自由選擇複製）
             SelectionContainer {
                 Text(
-                    (data.answer ?: data.message ?: "").display(simplified),
+                    split.visible.ifBlank {
+                        (data.answer ?: data.message ?: "")
+                    }.display(simplified),
                     style = MaterialTheme.typography.bodyMedium,
                 )
             }
@@ -925,7 +1038,7 @@ private fun BotCard(
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary)
                 item.evidence.forEach { ev ->
-                    EvidenceCard(ev, simplified, onOpenClause)
+                    EvidenceCard(ev, simplified, onOpenClause, onOpenBook)
                 }
             }
 
@@ -952,9 +1065,18 @@ private fun EvidenceCard(
     ev: EvidenceCardData,
     simplified: Boolean,
     onOpenClause: (String) -> Unit,
+    onOpenBook: (String, String, String) -> Unit = { _, _, _ -> },
 ) {
     Card(
-        modifier = Modifier.fillMaxWidth().clickable { onOpenClause(ev.clauseId) },
+        modifier = Modifier.fillMaxWidth().clickable {
+            if (ev.sourceType == "library") {
+                // 歷代書證：閱讀器定位開卷（摘錄前綴作定位詞）
+                onOpenBook(ev.book, ev.section,
+                    ev.excerpt.take(12))
+            } else {
+                onOpenClause(ev.clauseId)
+            }
+        },
         colors = CardDefaults.cardColors(
             containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
     ) {
@@ -964,7 +1086,13 @@ private fun EvidenceCard(
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
                 Text(
-                    ev.clauseNumber?.let { "《伤寒论》第 $it 条" } ?: ev.clauseId,
+                    if (ev.sourceType == "library")
+                        ("《" + ev.book +
+                            (ev.section.takeIf { it.isNotBlank() }
+                                ?.let { "·$it" } ?: "") + "》")
+                            .display(simplified)
+                    else ev.clauseNumber?.let { "《伤寒论》第 $it 条" }
+                        ?: ev.clauseId,
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.SemiBold,
                     color = MaterialTheme.colorScheme.primary,
@@ -1055,6 +1183,43 @@ private fun TraceSection(trace: List<TraceStepView>) {
                         }
                     }
                 }
+            }
+        }
+    }
+}
+
+/** 思考過程折疊區（<think> 內容）：完成後默認折疊，點擊展開。 */
+@Composable
+private fun ThinkSection(think: String, simplified: Boolean) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            Modifier.clickable { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                "🧠 思考过程（${think.length} 字）",
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Icon(
+                if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (expanded) {
+            SelectionContainer {
+                Text(
+                    think.display(simplified),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontStyle = FontStyle.Italic,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    modifier = Modifier.fillMaxWidth().background(
+                        MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                        RoundedCornerShape(8.dp)).padding(8.dp),
+                )
             }
         }
     }

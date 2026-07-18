@@ -337,7 +337,80 @@ class LibraryStore(private val context: Context) {
         hits
     }
 
-    // —— 智能體全庫取證加速（v1.10）——
+    // —— 智能體全庫取證加速（v1.10/v1.11）——
+
+    /** 啟動預熱：編目 + 字符倒排索引（首次智能體檢索不再付索引解析成本）。 */
+    suspend fun prewarmSearch() {
+        if (!ensureCatalog()) return
+        ensureCharIndex()
+    }
+
+    /** 折疊全文緩存單元：raw 行（摘錄展示）+ folded 行（匹配）+ 行級章節。 */
+    private class CachedBook(
+        val rawLines: List<String>,
+        val foldedLines: List<String>,
+        val sectionAt: List<String>,
+        val chars: Long,
+    )
+
+    private val bookCacheLock = Any()
+    private var bookCacheChars = 0L
+
+    /** 折疊文本 LRU（字符預算 ~16M ≈ 常用書 30-60 部）：命中書的檢索
+     *  是純內存掃描（毫秒級）；TCM 查詢高度集中在少數經典，暖後
+     *  整條檢索路徑進入 ms 檔。 */
+    private val bookCache = object : LinkedHashMap<String, CachedBook>(
+        64, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, CachedBook>?): Boolean {
+            if (eldest != null && bookCacheChars > 16_000_000L) {
+                bookCacheChars -= eldest.value.chars
+                return true
+            }
+            return false
+        }
+    }
+
+    private fun cachedBook(u: Unit_): CachedBook? {
+        synchronized(bookCacheLock) { bookCache[u.id] }?.let { return it }
+        val raw = ArrayList<String>()
+        val folded = ArrayList<String>()
+        val sections = ArrayList<String>()
+        var currentSection = ""
+        var chars = 0L
+        for (name in u.files) {
+            try {
+                context.assets.open("library/books/${u.id}/$name")
+                    .bufferedReader(Charsets.UTF_8).useLines { lines ->
+                        var inMeta = false
+                        for (rawLine in lines) {
+                            val line = rawLine.trim()
+                            if (line == "<book>") { inMeta = true; continue }
+                            if (line == "</book>") { inMeta = false; continue }
+                            if (inMeta || line.isEmpty()) continue
+                            heading.matchEntire(line)?.let {
+                                currentSection = it.groupValues[2]
+                                return@let
+                            }
+                            raw.add(line)
+                            folded.add(TextNorm.foldVariants(line))
+                            sections.add(currentSection)
+                            chars += line.length * 2L
+                        }
+                    }
+            } catch (_: Exception) {
+                return null
+            }
+        }
+        val cb = CachedBook(raw, folded, sections, chars)
+        synchronized(bookCacheLock) {
+            if (!bookCache.containsKey(u.id)) {
+                bookCacheChars += chars
+                bookCache[u.id] = cb
+            }
+        }
+        return cb
+    }
 
     /** 近期查詢 LRU 緩存（深度思考多輪補檢時同詞複用，命中即毫秒返回）。 */
     private val grepCache = object : LinkedHashMap<String, List<GrepHit>>(
@@ -388,50 +461,24 @@ class LibraryStore(private val context: Context) {
                         if (count.get() >= limit ||
                             System.currentTimeMillis() > deadline) break
                         val u = units[idx]
+                        // 折疊文本緩存：命中即純內存掃描（毫秒級）；
+                        // 首次觸達的書付一次讀取+折疊成本後常駐 LRU
+                        val cb = cachedBook(u) ?: continue
                         var inBook = 0
-                        var currentSection = ""
-                        for (name in u.files) {
+                        for (li in cb.foldedLines.indices) {
                             if (inBook >= perBookLimit ||
                                 count.get() >= limit) break
-                            try {
-                                context.assets
-                                    .open("library/books/${u.id}/$name")
-                                    .bufferedReader(Charsets.UTF_8)
-                                    .useLines { lines ->
-                                        var inMeta = false
-                                        for (raw in lines) {
-                                            if (inBook >= perBookLimit ||
-                                                count.get() >= limit) break
-                                            val line = raw.trim()
-                                            if (line == "<book>") {
-                                                inMeta = true; continue
-                                            }
-                                            if (line == "</book>") {
-                                                inMeta = false; continue
-                                            }
-                                            if (inMeta) continue
-                                            heading.matchEntire(line)?.let {
-                                                currentSection =
-                                                    it.groupValues[2]
-                                                return@let
-                                            }
-                                            val folded =
-                                                TextNorm.foldVariants(line)
-                                            val pos = folded.indexOf(q)
-                                            if (pos >= 0) {
-                                                val from = (pos - 30)
-                                                    .coerceAtLeast(0)
-                                                val to = (pos + q.length + 50)
-                                                    .coerceAtMost(line.length)
-                                                found.add(GrepHit(u,
-                                                    currentSection,
-                                                    line.substring(from, to)))
-                                                inBook++
-                                                count.incrementAndGet()
-                                            }
-                                        }
-                                    }
-                            } catch (_: Exception) {
+                            val pos = cb.foldedLines[li].indexOf(q)
+                            if (pos >= 0) {
+                                val line = cb.rawLines[li]
+                                val from = (pos - 30).coerceAtLeast(0)
+                                val to = (pos + q.length + 50)
+                                    .coerceAtMost(line.length)
+                                found.add(GrepHit(u, cb.sectionAt[li],
+                                    line.substring(
+                                        from.coerceAtMost(line.length), to)))
+                                inBook++
+                                count.incrementAndGet()
                             }
                         }
                     }

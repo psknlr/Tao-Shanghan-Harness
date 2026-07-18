@@ -247,6 +247,21 @@ data class CitationReport(
     val ok: Boolean = false,
 )
 
+/** 直連統一取證的單條證據（客戶端本地填充，服務端不發送此字段）。 */
+@Serializable
+data class DirectEvidenceItem(
+    /** clause | library */
+    @SerialName("source_type") val sourceType: String = "clause",
+    /** SHL_… 或 《書名·章節》。 */
+    val ref: String = "",
+    val book: String = "",
+    val section: String = "",
+    val excerpt: String = "",
+    val stars: Int = 3,
+    val label: String = "",
+    @SerialName("clause_id") val clauseId: String = "",
+)
+
 /** 拒答與正答共用一個 DTO：字段全部可空/帶默認。 */
 @Serializable
 data class AgentData(
@@ -269,6 +284,9 @@ data class AgentData(
     @SerialName("safety_notice") val safetyNotice: String = "",
     @SerialName("_role_projection") val roleProjection: JsonObject? = null,
     @SerialName("error") val errorMessage: String? = null,
+    /** 直連統一取證證據（含歷代古籍書證；僅客戶端本地填充）。 */
+    @SerialName("_direct_evidence")
+    val directEvidence: List<DirectEvidenceItem> = emptyList(),
 )
 
 // ---------------------------------------------------------------- misc
