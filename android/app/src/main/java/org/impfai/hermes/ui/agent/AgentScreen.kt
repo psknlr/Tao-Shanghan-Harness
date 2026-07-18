@@ -10,10 +10,13 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material3.Card
@@ -34,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -44,7 +48,9 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.doubleOrNull
+import androidx.compose.material3.FilterChip
 import org.impfai.hermes.AppContainer
+import org.impfai.hermes.BuildConfig
 import org.impfai.hermes.core.model.AgentData
 import org.impfai.hermes.data.RepoResult
 import org.impfai.hermes.ui.common.CitationBadge
@@ -56,6 +62,12 @@ sealed interface ChatItem {
     data class User(val text: String) : ChatItem
     data class Bot(val data: AgentData) : ChatItem
     data class Failure(val message: String) : ChatItem
+
+    /** 直連流式中間態：步驟時間線 + 增量文本。 */
+    data class Streaming(
+        val steps: List<String>,
+        val partial: String,
+    ) : ChatItem
 }
 
 class AgentViewModel(private val container: AppContainer) : ViewModel() {
@@ -64,6 +76,10 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
         val loading: Boolean = false,
         val simplified: Boolean = true,
         val role: String = "student",
+        /** "server"=Hermes 服務端；"direct"=VIP 直連大模型（BYOK）。
+         *  VIP 默認直連——純端側版本不依賴 Hermes 服務端。 */
+        val source: String = if (BuildConfig.VIP) "direct" else "server",
+        val directReady: Boolean = false,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -73,8 +89,22 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
         viewModelScope.launch {
             val s = container.settings.current()
             _state.value = _state.value.copy(
-                simplified = s.simplifiedDisplay, role = s.requestedRole)
+                simplified = s.simplifiedDisplay, role = s.requestedRole,
+                directReady = s.llmApiKey.isNotBlank())
         }
+    }
+
+    fun setSource(source: String) {
+        viewModelScope.launch {
+            val s = container.settings.current()
+            _state.value = _state.value.copy(
+                source = source, directReady = s.llmApiKey.isNotBlank())
+        }
+    }
+
+    private fun replaceLast(item: ChatItem) {
+        _state.value = _state.value.copy(
+            items = _state.value.items.dropLast(1) + item)
     }
 
     fun send(question: String) {
@@ -83,22 +113,51 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
         _state.value = _state.value.copy(
             items = _state.value.items + ChatItem.User(q), loading = true)
         viewModelScope.launch {
-            val item = when (val r = container.repo.agent(q)) {
-                is RepoResult.Data -> ChatItem.Bot(r.value)
-                is RepoResult.Error -> ChatItem.Failure("${r.code}: ${r.message}")
+            if (_state.value.source == "direct") {
+                // 直連：流式——思考/檢索步驟時間線 + 增量文本
+                var steps = listOf<String>()
+                var partial = ""
+                _state.value = _state.value.copy(
+                    items = _state.value.items + ChatItem.Streaming(steps, ""))
+                val result = container.repo.directAgentStream(q) { ev ->
+                    when (ev) {
+                        is org.impfai.hermes.data.HermesRepository
+                            .StreamEvent.Step -> steps = steps + ev.label
+                        is org.impfai.hermes.data.HermesRepository
+                            .StreamEvent.Delta -> partial += ev.text
+                    }
+                    viewModelScope.launch {
+                        replaceLast(ChatItem.Streaming(steps, partial))
+                    }
+                }
+                val item = when (result) {
+                    is RepoResult.Data -> ChatItem.Bot(result.value)
+                    is RepoResult.Error ->
+                        ChatItem.Failure("${result.code}: ${result.message}")
+                }
+                replaceLast(item)
+                _state.value = _state.value.copy(loading = false)
+            } else {
+                val result = container.repo.agent(q)
+                val item = when (result) {
+                    is RepoResult.Data -> ChatItem.Bot(result.value)
+                    is RepoResult.Error ->
+                        ChatItem.Failure("${result.code}: ${result.message}")
+                }
+                _state.value = _state.value.copy(
+                    items = _state.value.items + item, loading = false)
             }
-            _state.value = _state.value.copy(
-                items = _state.value.items + item, loading = false)
         }
     }
 }
 
 @Composable
-fun AgentScreen(onOpenClause: (String) -> Unit) {
+fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
     val container = rememberContainer()
     val vm: AgentViewModel = viewModel { AgentViewModel(container) }
     val state by vm.state.collectAsStateWithLifecycle()
-    var input by remember { mutableStateOf("") }
+    // 條文頁「AI 解讀」帶入的預填問題；prefill 變化（換條文）時重置輸入
+    var input by remember(prefill) { mutableStateOf(prefill) }
     val listState = rememberLazyListState()
 
     LaunchedEffect(state.items.size, state.loading) {
@@ -115,13 +174,39 @@ fun AgentScreen(onOpenClause: (String) -> Unit) {
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
             item {
-                Text(
-                    "围绕《伤寒论》条文提问；回答由服务端智能体生成，" +
-                        "引用经 CitationGuard 核验（当前角色请求：${state.role}）。",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    modifier = Modifier.padding(top = 12.dp),
-                )
+                Column(Modifier.padding(top = 12.dp)) {
+                    if (BuildConfig.VIP) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            FilterChip(
+                                selected = state.source == "server",
+                                onClick = { vm.setSource("server") },
+                                label = { Text("Hermes 服务端") },
+                            )
+                            FilterChip(
+                                selected = state.source == "direct",
+                                onClick = { vm.setSource("direct") },
+                                label = { Text("直连大模型") },
+                            )
+                        }
+                        if (state.source == "direct" && !state.directReady) {
+                            Text(
+                                "尚未配置模型 API Key —— 请到「我的 → 直连大模型」设置",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.error,
+                            )
+                        }
+                    }
+                    Text(
+                        if (state.source == "direct")
+                            "直连模式：本地 BM25 先取证据条文 → 大模型作答 → " +
+                                "本地 CitationGuard 核验引用（密钥仅存本机）。"
+                        else
+                            "围绕《伤寒论》条文提问；回答由服务端智能体生成，" +
+                                "引用经 CitationGuard 核验（当前角色请求：${state.role}）。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
             }
             items(state.items.size) { i ->
                 when (val item = state.items[i]) {
@@ -143,6 +228,30 @@ fun AgentScreen(onOpenClause: (String) -> Unit) {
                         )
                     }
                     is ChatItem.Bot -> BotCard(item.data, state.simplified, onOpenClause)
+                    is ChatItem.Streaming -> Card {
+                        Column(Modifier.padding(12.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            item.steps.forEach { s ->
+                                Text(s, style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary)
+                            }
+                            if (item.partial.isNotBlank()) {
+                                Text(item.partial.display(state.simplified) + " ▌",
+                                    style = MaterialTheme.typography.bodyMedium)
+                            } else {
+                                Row(verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement =
+                                        Arrangement.spacedBy(8.dp)) {
+                                    CircularProgressIndicator(
+                                        Modifier.size(16.dp))
+                                    Text("生成中…",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = MaterialTheme
+                                            .colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
                     is ChatItem.Failure -> Card(
                         colors = CardDefaults.cardColors(
                             containerColor = MaterialTheme.colorScheme.errorContainer),
@@ -174,6 +283,10 @@ fun AgentScreen(onOpenClause: (String) -> Unit) {
                 modifier = Modifier.weight(1f),
                 placeholder = { Text("如：太阳中风的病机是什么？") },
                 maxLines = 3,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                keyboardActions = KeyboardActions(onSend = {
+                    if (input.isNotBlank()) { vm.send(input); input = "" }
+                }),
             )
             IconButton(
                 onClick = { vm.send(input); input = "" },

@@ -44,6 +44,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.impfai.hermes.AppContainer
 import org.impfai.hermes.BuildConfig
+import org.impfai.hermes.core.llm.DirectLlm
 import org.impfai.hermes.core.settings.AppSettings
 import org.impfai.hermes.data.ServerStatus
 import org.impfai.hermes.ui.common.NoticeBar
@@ -62,6 +63,16 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         val testResult: String = "",
         val testOk: Boolean = false,
         val saved: Boolean = false,
+        // —— VIP 直連大模型 ——
+        val llmProvider: String = "anthropic",
+        val llmApiKey: String = "",
+        val llmBaseUrl: String = "",
+        val llmModel: String = "",
+        val llmMaxTokens: String = "8192",
+        val llmSaved: Boolean = false,
+        val llmTesting: Boolean = false,
+        val llmTestResult: String = "",
+        val llmTestOk: Boolean = false,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -74,6 +85,53 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
                 loaded = true, baseUrl = s.baseUrl, token = s.apiToken,
                 role = s.requestedRole, simplified = s.simplifiedDisplay,
                 offlineOnly = s.offlineOnly,
+                llmProvider = s.llmProvider, llmApiKey = s.llmApiKey,
+                llmBaseUrl = s.llmBaseUrl, llmModel = s.llmModel,
+                llmMaxTokens = s.llmMaxTokens.toString(),
+            )
+        }
+    }
+
+    fun editLlm(
+        provider: String? = null, apiKey: String? = null,
+        baseUrl: String? = null, model: String? = null,
+        maxTokens: String? = null,
+    ) {
+        _state.value = _state.value.copy(
+            llmProvider = provider ?: _state.value.llmProvider,
+            llmApiKey = apiKey ?: _state.value.llmApiKey,
+            llmBaseUrl = baseUrl ?: _state.value.llmBaseUrl,
+            llmModel = model ?: _state.value.llmModel,
+            llmMaxTokens = maxTokens ?: _state.value.llmMaxTokens,
+            llmSaved = false,
+        )
+    }
+
+    private fun maxTokensOrDefault(): Int =
+        _state.value.llmMaxTokens.trim().toIntOrNull() ?: 8192
+
+    fun saveLlm() {
+        viewModelScope.launch {
+            val st = _state.value
+            container.settings.setLlm(st.llmProvider, st.llmApiKey,
+                st.llmBaseUrl, st.llmModel, maxTokensOrDefault())
+            _state.value = _state.value.copy(llmSaved = true)
+        }
+    }
+
+    fun testLlm() {
+        viewModelScope.launch {
+            val st = _state.value
+            _state.value = st.copy(llmTesting = true, llmTestResult = "")
+            container.settings.setLlm(st.llmProvider, st.llmApiKey,
+                st.llmBaseUrl, st.llmModel,
+                maxTokensOrDefault())   // 先保存再測：測的就是將用的配置
+            val r = DirectLlm.testConnection(st.llmProvider, st.llmApiKey,
+                st.llmBaseUrl, st.llmModel)
+            _state.value = _state.value.copy(
+                llmTesting = false, llmSaved = true,
+                llmTestOk = r.isSuccess,
+                llmTestResult = r.getOrElse { it.message ?: "测试失败" },
             )
         }
     }
@@ -141,6 +199,7 @@ fun SettingsScreen() {
     val vm: SettingsViewModel = viewModel { SettingsViewModel(container) }
     val state by vm.state.collectAsStateWithLifecycle()
     var showToken by remember { mutableStateOf(false) }
+    var showLlmKey by remember { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -152,7 +211,19 @@ fun SettingsScreen() {
         Text("我的", style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold)
 
-        SectionCard("服务端接入（API 设置）") {
+        SectionCard(
+            if (BuildConfig.VIP) "Hermes 服务端（可选：VIP 默认纯端侧运行）"
+            else "服务端接入（API 设置）"
+        ) {
+            if (BuildConfig.VIP) {
+                Text(
+                    "VIP 版全量知识库已内置，默认不连接任何服务器；" +
+                        "如需运行中心/深度研究/历代引用溯源等平台能力，" +
+                        "可在此配置自建 Hermes 服务端并关闭下方“仅离线模式”。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
             OutlinedTextField(
                 value = state.baseUrl,
                 onValueChange = { vm.edit(baseUrl = it) },
@@ -214,6 +285,103 @@ fun SettingsScreen() {
                 style = MaterialTheme.typography.labelSmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
+        }
+
+        if (BuildConfig.VIP) {
+            SectionCard("直连大模型（VIP · BYOK）") {
+                Text("自带 API Key 直连模型服务商；Key 仅保存在本机" +
+                    "（不随云备份、不发送到 Hermes 服务端）。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                Text("一键预设（填好端点与模型名，只需再填 Key）：",
+                    style = MaterialTheme.typography.labelMedium)
+                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    DirectLlm.PRESETS.forEach { ps ->
+                        FilterChip(
+                            selected = state.llmBaseUrl == ps.baseUrl &&
+                                state.llmProvider == ps.provider,
+                            onClick = {
+                                vm.editLlm(provider = ps.provider,
+                                    baseUrl = ps.baseUrl, model = ps.model)
+                            },
+                            label = { Text(ps.label) },
+                        )
+                    }
+                }
+                OutlinedTextField(
+                    value = state.llmApiKey,
+                    onValueChange = { vm.editLlm(apiKey = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("API Key") },
+                    singleLine = true,
+                    visualTransformation = if (showLlmKey) VisualTransformation.None
+                    else PasswordVisualTransformation(),
+                    trailingIcon = {
+                        IconButton(onClick = { showLlmKey = !showLlmKey }) {
+                            Icon(
+                                if (showLlmKey) Icons.Filled.VisibilityOff
+                                else Icons.Filled.Visibility,
+                                contentDescription = "显示/隐藏",
+                            )
+                        }
+                    },
+                )
+                OutlinedTextField(
+                    value = state.llmBaseUrl,
+                    onValueChange = { vm.editLlm(baseUrl = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("Base URL（留空用官方端点）") },
+                    placeholder = {
+                        Text(DirectLlm.defaultBaseUrl(state.llmProvider))
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Uri),
+                )
+                OutlinedTextField(
+                    value = state.llmModel,
+                    onValueChange = { vm.editLlm(model = it) },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("模型名（留空用默认）") },
+                    placeholder = { Text(DirectLlm.defaultModel(state.llmProvider)) },
+                    singleLine = true,
+                )
+                OutlinedTextField(
+                    value = state.llmMaxTokens,
+                    onValueChange = { s ->
+                        vm.editLlm(maxTokens = s.filter { it.isDigit() }.take(6))
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    label = { Text("最大输出 tokens（防长答截断）") },
+                    placeholder = { Text("8192") },
+                    supportingText = {
+                        Text("v1.6：全部模型调用统一使用该上限（1024–65536）；" +
+                            "MiniMax-M3 等支持长输出的模型可调大到 32768+")
+                    },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(
+                        keyboardType = KeyboardType.Number),
+                )
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(onClick = vm::saveLlm) {
+                        Text(if (state.llmSaved) "已保存" else "保存模型配置")
+                    }
+                    OutlinedButton(onClick = vm::testLlm,
+                        enabled = !state.llmTesting) {
+                        Text(if (state.llmTesting) "测试中…" else "测试模型连接")
+                    }
+                }
+                if (state.llmTestResult.isNotBlank()) {
+                    NoticeBar(state.llmTestResult, warning = !state.llmTestOk)
+                }
+                Text(
+                    "直连模式流程：本地 BM25 检索证据条文 → 大模型基于证据作答 → " +
+                        "本地 CitationGuard 核验引用。核验强度弱于服务端全链路闸门，" +
+                        "回答卡片会如实标注。",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
         }
 
         SectionCard("显示") {

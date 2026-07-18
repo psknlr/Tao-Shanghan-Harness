@@ -46,8 +46,16 @@ object TextNorm {
         "饥飢 饱飽 饮饮 饴飴 饼餅 馆館 首首 香香 马馬 驱驅 验驗 骨骨 高高 鬼鬼 " +
         "鱼魚 鸟鳥 鸡雞 麦麥 麻麻 黑黑 默默 鼓鼓 鼻鼻 齐齊 齿齒 龈齦 龟龜 "
 
+    // 對 Python textutil 的補充（v1.4）：領域高頻簡體字缺口——
+    // 「往来寒热」的「来」不在原映射中，導致逐字包含匹配 0 命中
+    //（BM25 分詞路徑對此免疫，精確 contains 路徑不免疫）。
+    // 注意不含「术」：原表 术→朮 是藥名歸一（白朮），不可覆蓋為 術
+    private const val S2T_SUPPLEMENT =
+        "来來 属屬 类類 别別 记記 说說 词詞 于於 宝寶 尔爾 乐樂 丰豐 举舉 "
+
     val S2T: Map<Char, Char> = buildMap {
-        for (pair in S2T_PAIRS.trim().split(Regex("\\s+"))) {
+        for (pair in (S2T_PAIRS + " " + S2T_SUPPLEMENT)
+            .trim().split(Regex("\\s+"))) {
             if (pair.length == 2 && pair[0] != pair[1]) put(pair[0], pair[1])
         }
     }
@@ -88,6 +96,11 @@ object TextNorm {
         text.map { T2S[it] ?: it }.joinToString("")
 
     fun normalizeQuery(text: String): String = foldVariants(s2t(text.trim()))
+
+    /** 規範比對空間（v1.4+）：簡體+異體歸一+去空白——簡繁任意輸入的
+     *  逐字包含匹配統一走這裡（檢索框/溯源/定位開卷共用）。 */
+    fun canon(text: String): String =
+        t2s(foldVariants(s2t(text))).replace(Regex("\\s+"), "")
 
     private fun isCjk(c: Char): Boolean = c.code in 0x3400..0x9FFF
 

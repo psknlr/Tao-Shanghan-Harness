@@ -106,6 +106,8 @@ fun ClauseScreen(
     clauseRef: String,
     onOpenClause: (String) -> Unit,
     onBack: () -> Unit,
+    onAskAi: (question: String) -> Unit = {},
+    onOpenBook: (bookTitle: String, locate: String) -> Unit = { _, _ -> },
 ) {
     val container = rememberContainer()
     val vm: ClauseViewModel = viewModel(key = "clause-$clauseRef") {
@@ -200,6 +202,11 @@ fun ClauseScreen(
                         style = MaterialTheme.typography.bodyLarge.copy(
                             fontSize = 18.sp, lineHeight = 30.sp),
                     )
+                    TextButton(onClick = {
+                        val label = d.clauseNumber?.let { "第${it}条" } ?: d.clauseId
+                        onAskAi("请解读《伤寒论》$label：「${d.text}」" +
+                            "——病机、方证要点与相近条文的鉴别。")
+                    }) { Text("✦ AI 解读 / 围绕本条对话") }
                 }
             }
 
@@ -328,12 +335,38 @@ fun ClauseScreen(
                 item {
                     SectionCard("条文关系") {
                         d.relations.forEach { rel ->
-                            TextButton(onClick = { onOpenClause(rel.clauseId) }) {
-                                Text(
-                                    "${rel.relationType} → ${rel.clauseId}"
+                            val target = rel.clauseId
+                            when {
+                                // 條文 → 條文
+                                target.startsWith("SHL_") -> TextButton(
+                                    onClick = { onOpenClause(target) }) {
+                                    Text("${rel.relationType} → $target"
+                                        .display(simplified),
+                                        style = MaterialTheme
+                                            .typography.labelMedium)
+                                }
+                                // "書名:pNNN" 類注家/文獻引用 → 古籍庫開卷
+                                //（v1.4 修復：此前誤當條文 id 導致 NOT_FOUND）
+                                target.contains(":") -> TextButton(
+                                    onClick = {
+                                        // 帶條文文字定位：開卷直達包含段落
+                                        onOpenBook(target.substringBefore(":"),
+                                            d.text.take(14))
+                                    }) {
+                                    Text(("${rel.relationType} → " +
+                                        "${target.substringBefore(":")} 开卷 ▸")
+                                        .display(simplified),
+                                        style = MaterialTheme
+                                            .typography.labelMedium)
+                                }
+                                else -> Text(
+                                    "${rel.relationType} → $target"
                                         .display(simplified),
                                     style = MaterialTheme.typography.labelMedium,
-                                )
+                                    color = MaterialTheme.colorScheme
+                                        .onSurfaceVariant,
+                                    modifier = Modifier.padding(
+                                        horizontal = 12.dp, vertical = 4.dp))
                             }
                         }
                     }

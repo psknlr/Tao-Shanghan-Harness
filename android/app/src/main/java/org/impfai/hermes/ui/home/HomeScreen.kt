@@ -1,7 +1,9 @@
 package org.impfai.hermes.ui.home
 
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
@@ -12,8 +14,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.AutoAwesome
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
@@ -33,8 +39,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
@@ -44,6 +52,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.impfai.hermes.AppContainer
+import org.impfai.hermes.BuildConfig
 import org.impfai.hermes.core.model.SearchHit
 import org.impfai.hermes.data.ServerStatus
 import org.impfai.hermes.ui.common.SIX_CHANNELS
@@ -52,12 +61,17 @@ import org.impfai.hermes.ui.common.rememberContainer
 
 class HomeViewModel(private val container: AppContainer) : ViewModel() {
     data class UiState(
-        val loading: Boolean = true,
+        // 初始必須為 false：refresh() 的在途去重守衛以 loading 為判據，
+        // 初始 true 會讓 init 的首次 refresh 被自己擋住——首頁永遠
+        //「加載中/0 條記錄」（v1.1 實測 bug，SmokeUiTest 抓獲）
+        val loading: Boolean = false,
         val status: ServerStatus? = null,
         val localTotal: Int = 0,
         val localCanonical: Int = 0,
         val favorites: List<SearchHit> = emptyList(),
         val simplified: Boolean = true,
+        val vipContent: Boolean = false,
+        val skillsAvailable: Boolean = false,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -80,6 +94,8 @@ class HomeViewModel(private val container: AppContainer) : ViewModel() {
                 localCanonical = canonical,
                 favorites = favorites,
                 simplified = settings.simplifiedDisplay,
+                vipContent = container.localStore.vipContentAvailable(),
+                skillsAvailable = container.skillStore.available(),
             )
         }
     }
@@ -91,6 +107,8 @@ fun HomeScreen(
     onOpenSearch: (query: String, channel: String) -> Unit,
     onOpenClause: (String) -> Unit,
     onOpenSettings: () -> Unit,
+    onOpenSkills: () -> Unit = {},
+    onOpenFeature: (route: String) -> Unit = {},
 ) {
     val container = rememberContainer()
     val vm: HomeViewModel = viewModel { HomeViewModel(container) }
@@ -104,19 +122,63 @@ fun HomeScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState())
-            .padding(16.dp),
+            .verticalScroll(rememberScrollState()),
         verticalArrangement = Arrangement.spacedBy(14.dp),
     ) {
-        Column {
-            Text("伤寒Hermes", style = MaterialTheme.typography.headlineMedium,
-                fontWeight = FontWeight.Bold)
-            Text(
-                "《伤寒论》证据分层研读与辨证辅助 · 医哲未来人工智能研究院（IMPF-AI）",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+        // Hero 頭部：墨綠漸變 + 標題 + VIP 徽章
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .background(
+                    Brush.verticalGradient(
+                        listOf(
+                            MaterialTheme.colorScheme.primaryContainer,
+                            MaterialTheme.colorScheme.background,
+                        )
+                    )
+                )
+                .padding(horizontal = 16.dp)
+                .padding(top = 20.dp, bottom = 4.dp),
+        ) {
+            Column {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text("伤寒Hermes",
+                        style = MaterialTheme.typography.headlineMedium,
+                        color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    if (BuildConfig.VIP) {
+                        Spacer(Modifier.width(8.dp))
+                        Text(
+                            "VIP",
+                            style = MaterialTheme.typography.labelMedium,
+                            fontWeight = FontWeight.Black,
+                            color = MaterialTheme.colorScheme.onSecondary,
+                            modifier = Modifier
+                                .background(
+                                    MaterialTheme.colorScheme.secondary,
+                                    RoundedCornerShape(6.dp))
+                                .padding(horizontal = 8.dp, vertical = 2.dp),
+                        )
+                    }
+                }
+                Text(
+                    "《伤寒论》证据分层研读与辨证辅助",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                        .copy(alpha = 0.85f),
+                )
+                Text(
+                    "医哲未来人工智能研究院（IMPF-AI）",
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer
+                        .copy(alpha = 0.6f),
+                )
+            }
         }
+
+        Column(
+            Modifier.padding(horizontal = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(14.dp),
+        ) {
 
         // 服務端狀態卡
         Card(Modifier.fillMaxWidth()) {
@@ -127,11 +189,14 @@ fun HomeScreen(
                 Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                     val st = state.status
                     when {
-                        state.loading -> Text("检查服务端状态…",
+                        state.loading -> Text("加载中…",
                             style = MaterialTheme.typography.bodyMedium)
-                        st == null -> Text("离线模式（仅本地语料）",
+                        st == null -> Text(
+                            if (state.vipContent) "纯端侧模式 · 全量知识库已内置"
+                            else "离线模式（仅本地语料）",
                             style = MaterialTheme.typography.bodyMedium,
-                            fontWeight = FontWeight.SemiBold)
+                            fontWeight = FontWeight.SemiBold,
+                            color = Color(0xFF2E7D32))
                         st.reachable && st.ready -> {
                             Text("服务端在线 · ${st.backend}",
                                 style = MaterialTheme.typography.bodyMedium,
@@ -170,7 +235,8 @@ fun HomeScreen(
             }
         }
 
-        // 快速檢索
+        // 快速檢索（鍵盤搜索鍵與圖標按鈕同效——v1.1 只有圖標可點，
+        // 用戶按輸入法「搜索」無反應被感知為「檢索沒實現」）
         OutlinedTextField(
             value = query,
             onValueChange = { query = it },
@@ -182,6 +248,10 @@ fun HomeScreen(
                 }
             },
             singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = {
+                if (query.isNotBlank()) onOpenSearch(query, "")
+            }),
         )
 
         // 六經入口
@@ -197,6 +267,68 @@ fun HomeScreen(
                         onClick = { onOpenSearch("", ch) },
                         label = { Text(ch.display(state.simplified)) },
                     )
+                }
+            }
+        }
+
+        // 功能宮格：原平台 15 模塊中已端側化/可用的入口
+        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text("研习工作台", style = MaterialTheme.typography.titleSmall,
+                fontWeight = FontWeight.Bold)
+            FlowRow(
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                listOf(
+                    "六经教学" to "teach",
+                    "方证鉴别" to "differential",
+                    "误治传变" to "mistreat",
+                    "科研·论文" to "research",
+                    "溯源工作台" to "trace",
+                    "古籍库" to "library",
+                ).forEach { (label, route) ->
+                    Card(
+                        Modifier.clickable { onOpenFeature(route) },
+                    ) {
+                        Text(label,
+                            style = MaterialTheme.typography.bodyMedium,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.padding(
+                                horizontal = 16.dp, vertical = 12.dp))
+                    }
+                }
+            }
+        }
+
+        // VIP：內置知識庫與 Skill 庫入口
+        if (state.vipContent || state.skillsAvailable) {
+            Card(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(enabled = state.skillsAvailable) { onOpenSkills() },
+            ) {
+                Row(
+                    Modifier.padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        Icons.Filled.AutoAwesome, contentDescription = null,
+                        tint = MaterialTheme.colorScheme.secondary,
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text("VIP 知识库已内置",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold)
+                        Text(
+                            "注家 · 异文 · 条文关系 · 归纳规则全量离线" +
+                                if (state.skillsAvailable) " ｜ 139 个 Skill → 点击浏览"
+                                else "",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                 }
             }
         }
@@ -239,6 +371,8 @@ fun HomeScreen(
             "本应用是中医古籍学习与研究辅助工具，不构成诊断或治疗建议。",
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.padding(bottom = 16.dp),
         )
+        }
     }
 }
