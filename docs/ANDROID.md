@@ -338,3 +338,68 @@ VIP 全息断言、139 Skill 断言）——两 flavor 各 21 项全绿。
   https；release 暂用 debug 签名保证可安装（正式发布须换 IMPF-AI 签名）；
 - 两项「有意偏离」保留并在代码内注明：离线纯数字直查条文（Python 端
   CJK 分词对纯数字返回空）；方名 +3.0 加分暂不做 lexicon 别名归一（Phase 4）。
+
+## 7. 外部产品/安全评审（2026-07）逐条采纳与改进记录
+
+> 评审共十三节。处理原则：**合理的直接落地；方向对但方案不适配本仓库
+> 刻意架构决策的，给出改进式落地；确实不适用的暂缓并说明理由。**
+> 所有「暂缓」不是否定，而是排入路线图并写明触发条件。
+
+### 7.1 逐条决定
+
+| # | 评审建议 | 决定 | 落地/理由 |
+|---|---|---|---|
+| 二 | Agent 产品架构：任务状态可视化，而非聊天气泡 | **采纳（改进式）** | 后端本就返回真实执行轨迹 `agent_trace`（tool_scope/tool_call/reflection/citation_check/hypotheses/claim_binding…），此前客户端**丢弃**了它。现在回答卡渲染「执行过程」清单（`AgentPresentation.humanizeTrace`，✓/⚠ 逐步呈现），等待期显示服务端流水线说明+已用秒数。**改进点**：不做假的分步打勾动画——stdlib 后端无 SSE，中途进度不可观测，伪造「正在检索古籍…✓」是在证据型产品里制造不诚实 UI。SSE/Run 轮询接入后升级为真实时进度（Phase 5，后端 `GET /api/v1/runs/{id}` 已就绪） |
+| 三 | Evidence UX：证据卡（原文/出处/等级/现代解释） | **采纳** | 智能体回答的 `evidence_clause_ids` 升级为结构化 Evidence Card：原文摘录（本地语料回查，离线可核对）、出处章节、A–E 分层徽章、星级证据等级、点击回源条文页。**改进点**：星级=语料证据分层（A 原文直述=★★★★★ … E 模型推理=★）的确定性映射，不是模型自评分；「现代解释/争议」对应 C 层注家与 B 层异文，在条文详情页已有，不在回答卡里重复塞入 |
+| 四 | 检索升级 Room+FTS5+HNSW 向量 | **暂缓（维持既有决策）** | 实测语料 681 条/<1MB，内存 BM25 检索毫秒级返回；Room+FTS5+向量索引在此规模是纯超配，且引入 Python/Kotlin 排序漂移风险。**触发条件**：classics 古籍全库离线包（803 部）落地时引入 Room+FTS5；向量/Hybrid 检索先在服务端做（embedding 属权威推理端），端侧只做候选缓存。方向认同，时机不到 |
+| 五 | Token 不应存 DataStore | **采纳** | 新增 `SecureTokenStore`：Android Keystore 主密钥 + EncryptedSharedPreferences（AES256-SIV/GCM）；DataStore 里的历史明文令牌首次读取时一次性迁移并抹除；个别 ROM Keystore 损坏时降级明文并在设置页红字明示（不静默假装安全）。**改进点**：评审推荐的 OAuth2 PKCE + 短期 token 是正确终态，但依赖服务端 OIDC 签发能力——后端 stdlib 零依赖是刻意决策，OIDC 属部署层（反向代理/网关），排入路线图 |
+| 六 | Release 用 debug 签名是发布级问题 | **采纳** | release 签名改由 `android/keystore.properties`（.gitignore 排除，含 `*.jks`）驱动；文件缺失时回退 debug 签名并打印「禁止分发」构建警告——保留「本地可安装验证」工作流的同时，使正式发布路径就绪。Google Play App Signing / CI 注入密钥即接此配置 |
+| 七 | 医疗 AI 缺审计系统 | **采纳（分层）** | 新增本机 `AuditLog`（JSONL）：每次智能体问答/方证匹配记录 caseId（UTC 派生 `20260717-093012-483`）、时间戳、输入、请求/生效角色、作答后端、证据条文、引用核验结果、拒答标记、错误码；容量 500 条自动裁剪；设置页可查看/清除。**分层说明**：权威审计在服务端（鉴权、角色裁定、run 记录），客户端审计解决「移动端自查与教学复盘」——两端各记各的事实，不互相冒充 |
+| 八 | 首页像工具集合，缺产品感 | **采纳** | 首页重设计：产品定位首屏（名称+「古籍医学智能体 · 证据可溯源」）→ 四个行动卡（开始咨询/古籍探索/方证辨证/今日条文）→ 今日条文卡（按天确定性轮换核心条文）→ 服务端状态降为次要信息行 → 六经/收藏/免责声明。「今日知识」采纳为「今日条文」：确定性选取（`dailyClauseIndex`），非随机 |
+| 九 | 缺账号体系（登录+身份） | **改进式落地** | 完整账号体系依赖服务端 OIDC（暂缓，见 #五）。已做：设置页重排，「身份与角色」前置为第一小节（患者/学生/研究者/医师，人话文案），服务端地址/令牌降级为「服务端接入」小节——普通用户先回答「我是谁」，工程配置不再是第一印象。RBAC 本就在服务端（角色绑定 Key + policy.py 裁定），客户端不复制 |
+| 十 | 多模型/推理模式选择 | **采纳（诚实映射）** | 智能体页新增会话模式与深度：模式=**服务端真实存在的角色面**（学习/临床辅助/科研→role 请求，服务端裁定上限，越级 403）；深度=**真实 API 参数** `max_steps`（快速 3/标准 5/深研 8，服务端钳制 1..12）。**改进点**：不虚构后端不存在的「模型选择」档位——多模型路由是服务端 `llm/providers` 的职责，客户端伪装可选模型=对用户撒谎 |
+| 十一 | WorkManager/Room/Crashlytics/Analytics | **部分暂缓** | WorkManager 内容包同步：协议已就绪（manifest sha256+确定性 zip），下载+校验+原子切换排 Phase 4，本轮不做半成品。Room 见 #四。**Crashlytics/Firebase Analytics 改进式否决**：医疗敏感场景默认接 Google 遥测在合规（大陆无 GMS/数据出境）与信任上都不成立——路线图为自托管崩溃收集（如 Sentry self-hosted）+ **匿名、可选、明示**的使用统计；本机审计日志（#七）已覆盖「无法迭代」担忧的核心（哪些问答/检索在发生、核验通过率如何） |
+| 十二 | ViewModel Factory / Hilt；网络层现代化 | **勘误+维持** | 评审所虑「`viewModel()` 无 Factory 致注入困难」不成立：全部调用点都是 `viewModel { XxxViewModel(container) }`（CreationExtras Factory lambda，官方推荐）。Hilt 维持「模块化拆分时引入」（§3.3）。网络层评审开的四味药里 Retrofit/OkHttp/**Kotlin Serialization**/**Flow** 本仓库已全在用；NetworkBoundResource 是 offline-first 缓存模式，与本项目「推理类请求绝不本地回退」的安全语义冲突，不采纳 |
+| 十三 | 国际化 | **采纳（起步）** | 底部导航与本轮重写的首页/智能体/设置页字符串全部迁入 `values/strings.xml`，并新增 `values-en/` 全量英文资源；检索/辨证/条文页的存量硬编码属机械性迁移，列入路线图逐屏清理。语料文本（条文/方剂）**不**翻译——它们是证据本体，只做简繁显示层转换 |
+
+### 7.2 本轮新增代码地图
+
+```text
+core/model/AgentPresentation.kt   trace 人类可读化 / 证据等级映射 / 今日条文选取（纯函数，JVM 测试）
+core/audit/AuditLog.kt            本机审计日志（JSONL，纯 JVM，容量裁剪，故障静默）
+core/settings/SecureTokenStore.kt Keystore 加密令牌存储（含明文降级明示）
+core/settings/SettingsRepository  令牌迁移 + agentMode/agentDepth 偏好
+data/HermesRepository             agent(roleOverride, maxSteps) + 审计埋点
+ui/agent/AgentScreen              模式/深度选择 · 等待卡 · Evidence Card · 执行过程折叠区
+ui/home/HomeScreen                产品化首屏 + 今日条文（并修复 refresh 守卫缺陷：旧 if(loading)return 配合初始 loading=true 使首次刷新永不执行）
+ui/settings/SettingsScreen        身份前置 · 审计查看/清除 · 令牌安全状态
+test/…/AgentPresentationTest.kt   trace/等级/今日条文单测
+test/…/AuditLogTest.kt            审计日志单测（含裁剪与坏行容错）
+```
+
+### 7.3 验收注记
+
+- 后端零改动：v1 契约与 523 项 Python 测试不受影响；
+- 新增 JVM 单测均为纯 Kotlin（无 Android 依赖），`./gradlew :app:testDebugUnitTest` 运行；
+- 本轮改动在无 Android SDK 环境下编写，未经本地编译验证——合入后请以
+  `./gradlew :app:assembleDebug :app:testDebugUnitTest` 复核（依赖新增仅
+  `androidx.security:security-crypto:1.1.0-alpha06`）。
+
+## 8. v1.7.0：主线合流 + 安全/证据 UX 收口（2026-07-18）
+
+将评审改造分支（§7）与 v1.6.0 VIP 主线合并，互补收口：
+
+- **秘密全部入 Keystore**：Hermes 角色令牌 + VIP BYOK 供应商 Key（原
+  明文 DataStore）→ EncryptedSharedPreferences；旧值首读一次性迁移并
+  抹除；Keystore 损坏设备设置页红字明示降级。
+- **审计覆盖三通道**：服务端智能体 / VIP 直连（无服务端审计，本机轨迹
+  是唯一证据记录）/ 方证匹配（含端侧规则回退）；设置页查看/清除。
+- **Evidence Card + agent_trace 执行过程**嫁接进流式双通道智能体页；
+  服务端通道新增会话模式（角色映射）与推理深度（max_steps 3/5/8）、
+  等待卡显示真实流水线说明与已用时。
+- **首页「今日条文」**（按天确定性轮换）；导航 i18n（values-en 全量）。
+- **Release 签名 keystore.properties 驱动**（取代 debug 硬编码）。
+- SmokeUiTest 固定 `qualifiers="zh-rCN"`：接入 values-en 后 Robolectric
+  默认 en-US 会渲染英文导航，中文断言必须显式限定符。
+- 实测验收：standard/vip × debug/release 四包构建成功；
+  `testStandardDebugUnitTest` + `testVipDebugUnitTest` 共 100 项全绿。

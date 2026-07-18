@@ -1,0 +1,74 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Shanghan Hermes</string>
+    <string name="developer_name">Institute of Medical Philosophy Future AI (IMPF-AI)</string>
+    <string name="tab_home">Home</string>
+    <string name="tab_search">Search</string>
+    <string name="tab_bianzheng">Diagnosis</string>
+    <string name="tab_agent">Agent</string>
+    <string name="tab_settings">Me</string>
+    <string name="disclaimer">This app is a study and research aid for classical Chinese medicine texts. It does not provide diagnosis or treatment advice; pattern identification and prescriptions must be determined in person by a licensed practitioner.</string>
+
+    <!-- Home -->
+    <string name="home_tagline">Classical-text medical agent · Traceable evidence</string>
+    <string name="home_action_consult">Start consulting</string>
+    <string name="home_action_consult_sub">Clause Q&amp;A · Verified citations</string>
+    <string name="home_action_explore">Explore texts</string>
+    <string name="home_action_explore_sub">681 clauses · Offline ready</string>
+    <string name="home_action_match">Pattern matching</string>
+    <string name="home_action_match_sub">Four-exam findings · Formula match</string>
+    <string name="home_action_daily">Daily clause</string>
+    <string name="home_action_daily_sub">One clause a day</string>
+    <string name="home_daily_title">Daily clause · No. %1$d</string>
+    <string name="home_status_checking">Checking server status…</string>
+    <string name="home_status_offline_mode">Offline mode (local corpus only)</string>
+    <string name="home_status_online">Server online · %1$s</string>
+    <string name="home_status_not_ready">Server reachable but not ready: %1$s</string>
+    <string name="home_status_unreachable">Server unreachable (using local corpus) · Tap to configure</string>
+    <string name="home_local_stats">Local corpus: %1$d records (core %2$d/398)</string>
+    <string name="home_refresh">Refresh</string>
+    <string name="home_six_channels">Six channels</string>
+    <string name="home_favorites">Favorites</string>
+
+    <!-- Agent -->
+    <string name="agent_input_hint">e.g. What is the pathogenesis of Taiyang wind-strike?</string>
+    <string name="agent_send">Send</string>
+    <string name="agent_mode_caption">Current: %1$s · Role ceiling is adjudicated by the server token; escalation requests are refused</string>
+    <string name="agent_running">Agent reasoning · %1$d s elapsed</string>
+    <string name="agent_running_pipeline">Server pipeline: retrieve evidence → verify citations → reflect and repair → bind claims (the real trace is shown when done)</string>
+    <string name="agent_clarification_hint">(The agent requested clarification — please provide fuller four-examination findings)</string>
+    <string name="agent_evidence_title">Classical evidence</string>
+    <string name="agent_evidence_remote_only">Not in the local corpus; tap to load from the server</string>
+    <string name="agent_trace_title">Execution trace (%1$d steps)</string>
+
+    <!-- Settings -->
+    <string name="settings_identity">Identity &amp; role</string>
+    <string name="settings_identity_caption">I am… (affects the evidence surface and safety policy)</string>
+    <string name="settings_identity_note">The role is only a request: the real ceiling is bound to the server token and cannot be escalated; patients never receive prescriptions or dosage content.</string>
+    <string name="settings_server">Server access (API settings)</string>
+    <string name="settings_server_url">Server URL</string>
+    <string name="settings_token">Access token (HERMES_API_KEYS role-bound key)</string>
+    <string name="settings_save">Save</string>
+    <string name="settings_saved">Saved</string>
+    <string name="settings_test">Test connection</string>
+    <string name="settings_testing">Testing…</string>
+    <string name="settings_http_warning">Plaintext HTTP address: development only (release builds block cleartext traffic). Use HTTPS in production.</string>
+    <string name="settings_token_secure">The token is encrypted at rest via Android Keystore (EncryptedSharedPreferences).</string>
+    <string name="settings_token_insecure">Warning: Keystore is unavailable on this device and the token is stored in plaintext — do not store high-privilege tokens here.</string>
+    <string name="settings_no_provider_keys">This app never stores model-provider keys (OpenAI/Anthropic etc. live only on the server); this token is just a role-bound access key issued by the Hermes server.</string>
+    <string name="settings_display">Display</string>
+    <string name="settings_simplified">Simplified Chinese</string>
+    <string name="settings_simplified_note">Source texts are traditional; conversion is display-only</string>
+    <string name="settings_offline">Offline</string>
+    <string name="settings_offline_only">Offline-only mode</string>
+    <string name="settings_offline_note">Bundled corpus only: clause search/reading and the formula library work; matching, the agent and commentaries need the server</string>
+    <string name="settings_audit">Consultation audit trail (on device)</string>
+    <string name="settings_audit_note">%1$d entries. Records the evidence trail of every agent Q&amp;A and formula match (question, role, backend, evidence clauses, verification result). Stored on this device only; the server keeps the authoritative audit.</string>
+    <string name="settings_audit_show">Show recent entries</string>
+    <string name="settings_audit_hide">Hide</string>
+    <string name="settings_audit_clear">Clear all</string>
+    <string name="settings_audit_empty">No entries yet</string>
+    <string name="settings_about">About</string>
+    <string name="settings_about_dev">Developer: %1$s</string>
+    <string name="settings_about_arch">Architecture: native Android client (trusted interaction + offline knowledge) + Hermes Python platform (authoritative reasoning, governance and evidence). All clinical-assist reasoning, role adjudication, patient projection and citation verification run on the server.</string>
+</resources>

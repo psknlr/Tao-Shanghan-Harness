@@ -8,4 +8,67 @@
     <string name="tab_agent">智能体</string>
     <string name="tab_settings">我的</string>
     <string name="disclaimer">本应用是中医古籍学习与研究辅助工具，不构成诊断或治疗建议；是否属于某种证型、如何用药，请务必由执业中医师当面判断。</string>
+
+    <!-- 首页（产品化重设计） -->
+    <string name="home_tagline">古籍医学智能体 · 证据可溯源</string>
+    <string name="home_action_consult">开始咨询</string>
+    <string name="home_action_consult_sub">条文问答 · 引用核验</string>
+    <string name="home_action_explore">古籍探索</string>
+    <string name="home_action_explore_sub">681 条条文 · 离线可查</string>
+    <string name="home_action_match">方证辨证</string>
+    <string name="home_action_match_sub">四诊要素 · 方证匹配</string>
+    <string name="home_action_daily">今日条文</string>
+    <string name="home_action_daily_sub">每日一条 · 循环研读</string>
+    <string name="home_daily_title">今日条文 · 第 %1$d 条</string>
+    <string name="home_status_checking">检查服务端状态…</string>
+    <string name="home_status_offline_mode">离线模式（仅本地语料）</string>
+    <string name="home_status_online">服务端在线 · %1$s</string>
+    <string name="home_status_not_ready">服务端可达但未就绪：%1$s</string>
+    <string name="home_status_unreachable">服务端不可达（已切换本地语料）· 点击配置</string>
+    <string name="home_local_stats">本地语料：%1$d 条记录（核心 %2$d/398）</string>
+    <string name="home_refresh">刷新</string>
+    <string name="home_six_channels">六经</string>
+    <string name="home_favorites">收藏</string>
+
+    <!-- 智能体 -->
+    <string name="agent_input_hint">如：太阳中风的病机是什么？</string>
+    <string name="agent_send">发送</string>
+    <string name="agent_mode_caption">当前：%1$s · 角色上限由服务端令牌裁定，越级请求会被拒绝</string>
+    <string name="agent_running">智能体推理中 · 已用 %1$d 秒</string>
+    <string name="agent_running_pipeline">服务端流水线：检索古籍取证 → 引用核验 → 反思修复 → 证据绑定（完成后可展开真实执行过程）</string>
+    <string name="agent_clarification_hint">（智能体请求补充信息，请提供更完整的四诊描述）</string>
+    <string name="agent_evidence_title">经典证据</string>
+    <string name="agent_evidence_remote_only">本地语料无此条目，点击尝试从服务端读取</string>
+    <string name="agent_trace_title">执行过程（%1$d 步）</string>
+
+    <!-- 我的 -->
+    <string name="settings_identity">身份与角色</string>
+    <string name="settings_identity_caption">我是……（影响回答的证据面与安全策略）</string>
+    <string name="settings_identity_note">角色只是请求：真实上限由服务端令牌绑定裁定，不可越级；患者身份不会收到任何处方与剂量内容。</string>
+    <string name="settings_server">服务端接入（API 设置）</string>
+    <string name="settings_server_url">服务端地址</string>
+    <string name="settings_token">访问令牌（HERMES_API_KEYS 角色绑定 Key）</string>
+    <string name="settings_save">保存</string>
+    <string name="settings_saved">已保存</string>
+    <string name="settings_test">测试连接</string>
+    <string name="settings_testing">测试中…</string>
+    <string name="settings_http_warning">当前为明文 HTTP 地址：仅限开发调试（Release 版禁止明文流量），生产环境请使用 HTTPS。</string>
+    <string name="settings_token_secure">令牌已通过 Android Keystore 加密存储（EncryptedSharedPreferences）。</string>
+    <string name="settings_token_insecure">警告：本机 Keystore 不可用，令牌暂以明文存储——请勿在此设备保存高权限令牌。</string>
+    <string name="settings_no_provider_keys">本应用不保存任何模型供应商密钥（OpenAI/Anthropic 等仅存在于服务端）；此处令牌只是 Hermes 服务端签发的角色绑定访问 Key。</string>
+    <string name="settings_display">显示</string>
+    <string name="settings_simplified">简体显示</string>
+    <string name="settings_simplified_note">原文以繁体为准，仅显示层转换</string>
+    <string name="settings_offline">离线</string>
+    <string name="settings_offline_only">仅离线模式</string>
+    <string name="settings_offline_note">只用 APK 内置语料：条文检索/阅读/方剂库可用；方证匹配、智能体、注家异文等需要服务端</string>
+    <string name="settings_audit">咨询审计记录（本机）</string>
+    <string name="settings_audit_note">共 %1$d 条。记录每次智能体问答与方证匹配的证据轨迹（问题、角色、后端、证据条文、核验结果），仅保存在本机，用于自查与教学复盘；服务端另有权威审计。</string>
+    <string name="settings_audit_show">查看最近记录</string>
+    <string name="settings_audit_hide">收起</string>
+    <string name="settings_audit_clear">清除全部</string>
+    <string name="settings_audit_empty">暂无记录</string>
+    <string name="settings_about">关于</string>
+    <string name="settings_about_dev">研发者：%1$s</string>
+    <string name="settings_about_arch">架构：Android 原生客户端（可信交互端 + 离线知识端）+ Hermes Python 平台（权威推理端、治理端、证据端）。所有临床辅助推理、角色裁定、患者投影与引用核验均在服务端执行。</string>
 </resources>

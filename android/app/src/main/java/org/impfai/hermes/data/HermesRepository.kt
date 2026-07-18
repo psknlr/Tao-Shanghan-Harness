@@ -1,5 +1,6 @@
 package org.impfai.hermes.data
 
+import org.impfai.hermes.core.audit.AuditLog
 import org.impfai.hermes.core.llm.DirectLlm
 import org.impfai.hermes.core.model.AgentData
 import org.impfai.hermes.core.model.AgentRequest
@@ -63,6 +64,10 @@ class HermesRepository(
     private val settingsRepo: SettingsRepository,
     private val localStore: LocalClauseStore,
     private val apiFactory: ApiClientFactory,
+    /** 本機審計軌跡（評審建議七）：null = 不記錄（測試用）。
+     *  服務端通道與 VIP 直連通道都記——直連模式沒有服務端審計，
+     *  本機軌跡是唯一的證據記錄。 */
+    private val auditLog: AuditLog? = null,
 ) {
 
     private suspend fun api(): Pair<HermesApi, String?> {
@@ -152,8 +157,11 @@ class HermesRepository(
         pulse: List<String>,
         sixChannel: String?,
     ): RepoResult<MatchData> {
+        var requestedRole = ""
+        var result: RepoResult<MatchData>? = null
         if (!offlineOnly()) {
             val remote = withApi<MatchData> { api, role ->
+                requestedRole = role ?: ""
                 when (val r = safeCall {
                     api.match(MatchRequest(symptoms = symptoms, pulse = pulse,
                         sixChannel = sixChannel?.takeIf { it.isNotBlank() }, role = role))
@@ -167,22 +175,40 @@ class HermesRepository(
                 }
             }
             // 策略類錯誤（403 等）不回退：降級繞過授權等於客戶端自行提權
-            if (!(remote is RepoResult.Error && remote.code == "OFFLINE")) return remote
+            if (!(remote is RepoResult.Error && remote.code == "OFFLINE")) result = remote
         }
         // 端側確定性匹配（doctor.py 移植；VIP 純端側模式的默認路徑）
-        val local = LocalFormulaMatcher.match(localStore, symptoms, pulse, sixChannel)
-        return RepoResult.Data(
-            local, ResultOrigin.LOCAL_CORPUS,
+        val final = result ?: RepoResult.Data(
+            LocalFormulaMatcher.match(localStore, symptoms, pulse, sixChannel),
+            ResultOrigin.LOCAL_CORPUS,
             notice = "端侧匹配：本地规则库确定性计算（未连接服务端）",
         )
+        auditMatch(symptoms, pulse, sixChannel, requestedRole, final)
+        return final
     }
 
-    suspend fun agent(question: String): RepoResult<AgentData> {
+    /**
+     * 服務端智能體。
+     * @param roleOverride 會話模式的角色請求（評審建議十：模式 = 服務端
+     *   真實存在的角色面）；null 沿用「我的」頁角色。提權由服務端裁定拒絕。
+     * @param maxSteps 推理深度（服務端裁剪至 1..12）。
+     */
+    suspend fun agent(
+        question: String,
+        roleOverride: String? = null,
+        maxSteps: Int = 5,
+    ): RepoResult<AgentData> {
         if (offlineOnly()) {
             return RepoResult.Error("OFFLINE", "智能体需要连接 Hermes 服务端（离线模式已开启）")
         }
-        return withApi { api, role ->
-            when (val r = safeCall { api.agent(AgentRequest(question = question, role = role)) }) {
+        var requestedRole = ""
+        val result = withApi<AgentData> { api, role ->
+            val effRole = roleOverride?.takeIf { it.isNotBlank() } ?: role
+            requestedRole = effRole ?: ""
+            when (val r = safeCall {
+                api.agent(AgentRequest(question = question,
+                    maxSteps = maxSteps.coerceIn(1, 12), role = effRole))
+            }) {
                 is ApiResult.Success ->
                     r.data.errorMessage?.let {
                         RepoResult.Error("SERVER_MESSAGE", it)
@@ -191,6 +217,8 @@ class HermesRepository(
                 is ApiResult.Offline -> RepoResult.Error("OFFLINE", "无法连接服务端：${r.message}")
             }
         }
+        auditAgent("agent", question, requestedRole, result)
+        return result
     }
 
     // ------------------------------------------------------------------
@@ -251,12 +279,16 @@ class HermesRepository(
             maxTokens = s.llmMaxTokens,
             onDelta = { onEvent(StreamEvent.Delta(it)) },
         ).getOrElse { e ->
-            return RepoResult.Error("LLM_ERROR", e.message ?: "模型调用失败")
+            val err = RepoResult.Error("LLM_ERROR", e.message ?: "模型调用失败")
+            auditAgent("direct", question, "byok", err)
+            return err
         }
         onEvent(StreamEvent.Step("③ 本地 CitationGuard 核验引用…"))
-        return RepoResult.Data(
+        val out = RepoResult.Data(
             buildDirectAgentData(question, answer, hits, evidenceIds, model),
             ResultOrigin.SERVER)
+        auditAgent("direct", question, "byok", out)
+        return out
     }
 
     private fun buildDirectAgentData(
@@ -315,13 +347,17 @@ class HermesRepository(
             system = directSystemPrompt, user = userPrompt,
             maxTokens = s.llmMaxTokens,
         ).getOrElse { e ->
-            return RepoResult.Error("LLM_ERROR", e.message ?: "模型调用失败")
+            val err = RepoResult.Error("LLM_ERROR", e.message ?: "模型调用失败")
+            auditAgent("direct", question, "byok", err)
+            return err
         }
 
         val model = s.llmModel.ifBlank { DirectLlm.defaultModel(s.llmProvider) }
-        return RepoResult.Data(
+        val out = RepoResult.Data(
             buildDirectAgentData(question, answer, hits, evidenceIds, model),
             ResultOrigin.SERVER)
+        auditAgent("direct", question, "byok", out)
+        return out
     }
 
     /** 首頁/設置頁狀態卡：health + whoami + content manifest。 */
@@ -385,4 +421,89 @@ class HermesRepository(
 
     suspend fun formulaRules(): List<LocalClauseStore.FormulaRule> =
         localStore.formulaCatalog()
+
+    // ------------------------------------------------------------ audit
+
+    /** kind: agent（服務端）| direct（VIP 直連）。審計失敗不影響主流程。 */
+    private suspend fun auditAgent(
+        kind: String,
+        question: String,
+        requestedRole: String,
+        result: RepoResult<AgentData>,
+    ) {
+        val log = auditLog ?: return
+        val entry = when (result) {
+            is RepoResult.Data -> {
+                val d = result.value
+                val report = d.citationReport
+                AuditLog.Entry(
+                    caseId = AuditLog.newCaseId(),
+                    ts = AuditLog.timestamp(),
+                    kind = kind,
+                    input = question.take(500),
+                    requestedRole = requestedRole,
+                    effectiveRole = result.meta?.effectiveRole,
+                    backend = d.backend ?: result.meta?.backend ?: "",
+                    evidence = d.evidenceClauseIds,
+                    verdict = when {
+                        d.refused -> "安全闸门拒答"
+                        report != null && report.ok ->
+                            "引用已核验 ${report.verified.size} 条"
+                        report != null && report.hasAnyCitation -> "引用部分核验"
+                        else -> "无引用"
+                    },
+                    refused = d.refused,
+                )
+            }
+            is RepoResult.Error -> AuditLog.Entry(
+                caseId = AuditLog.newCaseId(),
+                ts = AuditLog.timestamp(),
+                kind = kind,
+                input = question.take(500),
+                requestedRole = requestedRole,
+                verdict = "请求失败",
+                resultCode = result.code,
+            )
+        }
+        log.record(entry)
+    }
+
+    private suspend fun auditMatch(
+        symptoms: List<String>,
+        pulse: List<String>,
+        sixChannel: String?,
+        requestedRole: String,
+        result: RepoResult<MatchData>,
+    ) {
+        val log = auditLog ?: return
+        val input = buildString {
+            append(symptoms.joinToString("、"))
+            if (pulse.isNotEmpty()) append(" · 脉：${pulse.joinToString("、")}")
+            sixChannel?.takeIf { it.isNotBlank() }?.let { append(" · $it") }
+        }.take(500)
+        val entry = when (result) {
+            is RepoResult.Data -> AuditLog.Entry(
+                caseId = AuditLog.newCaseId(),
+                ts = AuditLog.timestamp(),
+                kind = "match",
+                input = input,
+                requestedRole = requestedRole,
+                effectiveRole = result.meta?.effectiveRole,
+                backend = if (result.origin == ResultOrigin.SERVER)
+                    (result.meta?.backend ?: "") else "端侧规则",
+                evidence = result.value.matchedFormulaPatterns.map { it.formula },
+                verdict = "匹配 ${result.value.matchCount} 方",
+            )
+            is RepoResult.Error -> AuditLog.Entry(
+                caseId = AuditLog.newCaseId(),
+                ts = AuditLog.timestamp(),
+                kind = "match",
+                input = input,
+                requestedRole = requestedRole,
+                verdict = "请求失败",
+                resultCode = result.code,
+            )
+        }
+        log.record(entry)
+    }
 }

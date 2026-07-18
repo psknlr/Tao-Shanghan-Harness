@@ -1,6 +1,10 @@
 .gradle/
 build/
 local.properties
+# 簽名材料絕不入庫（keystore.properties 指向本地 keystore）
+keystore.properties
+*.jks
+*.keystore
 .idea/
 *.iml
 captures/

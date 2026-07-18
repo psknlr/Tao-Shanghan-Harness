@@ -1,8 +1,23 @@
+import java.util.Properties
+
 plugins {
     id("com.android.application")
     id("org.jetbrains.kotlin.android")
     id("org.jetbrains.kotlin.plugin.compose")
     id("org.jetbrains.kotlin.plugin.serialization")
+}
+
+// Release 簽名（外部評審建議六）：密鑰材料一律不入庫——
+// android/keystore.properties（.gitignore 排除）提供
+//   storeFile=../impfai-release.jks
+//   storePassword=...
+//   keyAlias=...
+//   keyPassword=...
+// 存在即用正式簽名；缺失回退 debug 簽名並打印警告（保住「release
+// 構建可本地安裝驗證」的工作流，但構建日誌明示該 APK 禁止分發）。
+val keystorePropsFile = rootProject.file("keystore.properties")
+val keystoreProps: Properties? = keystorePropsFile.takeIf { it.exists() }?.let { f ->
+    Properties().apply { f.inputStream().use { load(it) } }
 }
 
 android {
@@ -14,8 +29,8 @@ android {
         applicationId = "org.impfai.hermes"
         minSdk = 26
         targetSdk = 35
-        versionCode = 7
-        versionName = "1.6.0"
+        versionCode = 8
+        versionName = "1.7.0"
     }
 
     // standard：知識閱讀 + 服務端接入
@@ -34,6 +49,17 @@ android {
         }
     }
 
+    signingConfigs {
+        keystoreProps?.let { props ->
+            create("release") {
+                storeFile = rootProject.file(props.getProperty("storeFile"))
+                storePassword = props.getProperty("storePassword")
+                keyAlias = props.getProperty("keyAlias")
+                keyPassword = props.getProperty("keyPassword")
+            }
+        }
+    }
+
     buildTypes {
         release {
             isMinifyEnabled = true
@@ -42,9 +68,15 @@ android {
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro",
             )
-            // 暫用 debug 簽名使 release 可安裝驗證（審查發現 #14）；
-            // 正式發佈前必須替換為 IMPF-AI 的發佈簽名（keystore 不入庫）
-            signingConfig = signingConfigs.getByName("debug")
+            signingConfig = if (keystoreProps != null) {
+                signingConfigs.getByName("release")
+            } else {
+                logger.warn(
+                    "WARNING: keystore.properties 未找到——release 以 debug 簽名構建，" +
+                        "僅限本地安裝驗證，嚴禁對外分發；正式發佈請提供 " +
+                        "android/keystore.properties（見 docs/ANDROID.md）")
+                signingConfigs.getByName("debug")
+            }
         }
     }
     compileOptions {
@@ -149,6 +181,8 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
 
     implementation("androidx.datastore:datastore-preferences:1.1.1")
+    // 令牌加密存儲（Android Keystore 主密鑰，見 SecureTokenStore）
+    implementation("androidx.security:security-crypto:1.1.0-alpha06")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")

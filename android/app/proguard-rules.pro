@@ -13,3 +13,5 @@
 -dontwarn org.conscrypt.**
 -dontwarn org.bouncycastle.**
 -dontwarn org.openjsse.**
+# security-crypto → Tink 引用的 compile-only 註解（運行時不存在，R8 免警）
+-dontwarn com.google.errorprone.annotations.**

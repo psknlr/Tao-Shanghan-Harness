@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.res.stringResource
 import androidx.navigation.NavGraph.Companion.findStartDestination
 import androidx.navigation.NavHostController
 import androidx.navigation.compose.NavHost
@@ -24,6 +25,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.currentBackStackEntryAsState
 import androidx.navigation.compose.rememberNavController
 import androidx.navigation.navArgument
+import org.impfai.hermes.R
 import org.impfai.hermes.ui.agent.AgentScreen
 import org.impfai.hermes.ui.clause.ClauseScreen
 import org.impfai.hermes.ui.home.HomeScreen
@@ -41,16 +43,17 @@ import org.impfai.hermes.ui.skills.SkillsScreen
 
 data class TopDestination(
     val route: String,
-    val label: String,
+    /** 標籤走資源（i18n 起步，外部評審建議十三）。 */
+    val labelRes: Int,
     val icon: ImageVector,
 )
 
 val TOP_DESTINATIONS = listOf(
-    TopDestination("home", "首页", Icons.Filled.Home),
-    TopDestination("search", "检索", Icons.Filled.Search),
-    TopDestination("match", "辨证", Icons.AutoMirrored.Filled.MenuBook),
-    TopDestination("agent", "智能体", Icons.Filled.SmartToy),
-    TopDestination("settings", "我的", Icons.Filled.Person),
+    TopDestination("home", R.string.tab_home, Icons.Filled.Home),
+    TopDestination("search", R.string.tab_search, Icons.Filled.Search),
+    TopDestination("match", R.string.tab_bianzheng, Icons.AutoMirrored.Filled.MenuBook),
+    TopDestination("agent", R.string.tab_agent, Icons.Filled.SmartToy),
+    TopDestination("settings", R.string.tab_settings, Icons.Filled.Person),
 )
 
 fun NavHostController.openClause(clauseRef: String) {
@@ -88,8 +91,8 @@ fun AppRoot() {
                                 restoreState = true
                             }
                         },
-                        icon = { Icon(dest.icon, contentDescription = dest.label) },
-                        label = { Text(dest.label) },
+                        icon = { Icon(dest.icon, contentDescription = stringResource(dest.labelRes)) },
+                        label = { Text(stringResource(dest.labelRes)) },
                     )
                 }
             }

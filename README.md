@@ -13,7 +13,9 @@ android/    原生 Android 客户端（可信交互端 · 离线知识端）
             ├─ Kotlin + Jetpack Compose + Material 3
             ├─ 离线内置语料（681 条条文 + 113 方剂规则，构建期从
             │  backend/data 同源复制）与 BM25/文本规范化 Kotlin 移植
-            └─ 首页 / 检索 / 条文阅读器 / 辨证 / 智能体 / 设置（API 接入）
+            ├─ 智能体：会话模式/推理深度 · Evidence Card（原文/出处/
+            │  分层星级）· 真实 agent_trace 执行过程 · 本机审计日志
+            └─ 首页 / 检索 / 条文阅读器 / 辨证 / 智能体 / 设置（身份优先）
 docs/       ANDROID.md —— 架构决策、对原工程化方案的采纳与修改记录
 ```
 
@@ -29,6 +31,8 @@ cd android && ./gradlew :app:assembleDebug
 ```
 
 安全边界：模型供应商密钥只存在于服务端；Android 仅保存 Hermes 角色绑定
-访问令牌；角色上限由服务端裁定；Release 构建禁止明文流量。
+访问令牌（Android Keystore 加密存储）；角色上限由服务端裁定；Release 构建
+禁止明文流量，签名由不入库的 `android/keystore.properties` 驱动；智能体
+问答与方证匹配在本机留有可回看的审计轨迹。
 
 详见 [docs/ANDROID.md](docs/ANDROID.md)。

@@ -1,11 +1,13 @@
 package org.impfai.hermes.ui.agent
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.imePadding
@@ -19,6 +21,10 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -26,16 +32,19 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -43,6 +52,7 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
@@ -51,16 +61,30 @@ import kotlinx.serialization.json.doubleOrNull
 import androidx.compose.material3.FilterChip
 import org.impfai.hermes.AppContainer
 import org.impfai.hermes.BuildConfig
+import org.impfai.hermes.R
 import org.impfai.hermes.core.model.AgentData
+import org.impfai.hermes.core.model.EvidenceCardData
+import org.impfai.hermes.core.model.TraceStepView
+import org.impfai.hermes.core.model.evidenceGradeForLayer
+import org.impfai.hermes.core.model.humanizeTrace
+import org.impfai.hermes.core.model.starsText
+import org.impfai.hermes.core.settings.AppSettings
 import org.impfai.hermes.data.RepoResult
 import org.impfai.hermes.ui.common.CitationBadge
+import org.impfai.hermes.ui.common.LayerBadge
 import org.impfai.hermes.ui.common.SafetyNoticeBar
 import org.impfai.hermes.ui.common.display
 import org.impfai.hermes.ui.common.rememberContainer
 
 sealed interface ChatItem {
     data class User(val text: String) : ChatItem
-    data class Bot(val data: AgentData) : ChatItem
+
+    /** 回答 + 已解析證據卡（本地語料回查）+ 人類可讀執行過程。 */
+    data class Bot(
+        val data: AgentData,
+        val evidence: List<EvidenceCardData> = emptyList(),
+        val trace: List<TraceStepView> = emptyList(),
+    ) : ChatItem
     data class Failure(val message: String) : ChatItem
 
     /** 直連流式中間態：步驟時間線 + 增量文本。 */
@@ -80,6 +104,10 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
          *  VIP 默認直連——純端側版本不依賴 Hermes 服務端。 */
         val source: String = if (BuildConfig.VIP) "direct" else "server",
         val directReady: Boolean = false,
+        /** 會話模式（角色請求映射，僅服務端通道生效）。 */
+        val mode: String = "",
+        /** 推理深度 max_steps（僅服務端通道生效）。 */
+        val depth: Int = AppSettings.DEFAULT_AGENT_DEPTH,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -90,9 +118,49 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
             val s = container.settings.current()
             _state.value = _state.value.copy(
                 simplified = s.simplifiedDisplay, role = s.requestedRole,
-                directReady = s.llmApiKey.isNotBlank())
+                directReady = s.llmApiKey.isNotBlank(),
+                mode = s.agentMode, depth = s.agentDepth)
         }
     }
+
+    fun setMode(mode: String) {
+        _state.value = _state.value.copy(mode = mode)
+        viewModelScope.launch { container.settings.setAgentMode(mode) }
+    }
+
+    fun setDepth(depth: Int) {
+        _state.value = _state.value.copy(depth = depth)
+        viewModelScope.launch { container.settings.setAgentDepth(depth) }
+    }
+
+    /** 證據條文 → 本地語料回查（摘錄/出處/分層），查不到只給跳轉。 */
+    private suspend fun resolveEvidence(ids: List<String>): List<EvidenceCardData> {
+        if (ids.isEmpty()) return emptyList()
+        container.localStore.ensureLoaded()
+        return ids.distinct().take(8).map { id ->
+            val c = container.localStore.byId(id)
+                ?: id.toIntOrNull()?.let { container.localStore.byNumber(it) }
+            if (c == null) {
+                EvidenceCardData(clauseId = id)
+            } else {
+                EvidenceCardData(
+                    clauseId = c.clauseId,
+                    clauseNumber = c.clauseNumber,
+                    chapter = c.chapter,
+                    sixChannel = c.sixChannel,
+                    layer = c.layer,
+                    excerpt = c.cleanText,
+                    grade = evidenceGradeForLayer(c.layer),
+                )
+            }
+        }
+    }
+
+    private suspend fun botItem(data: AgentData): ChatItem.Bot = ChatItem.Bot(
+        data,
+        evidence = resolveEvidence(data.evidenceClauseIds),
+        trace = humanizeTrace(data.agentTrace),
+    )
 
     fun setSource(source: String) {
         viewModelScope.launch {
@@ -131,16 +199,19 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
                     }
                 }
                 val item = when (result) {
-                    is RepoResult.Data -> ChatItem.Bot(result.value)
+                    is RepoResult.Data -> botItem(result.value)
                     is RepoResult.Error ->
                         ChatItem.Failure("${result.code}: ${result.message}")
                 }
                 replaceLast(item)
                 _state.value = _state.value.copy(loading = false)
             } else {
-                val result = container.repo.agent(q)
+                val st = _state.value
+                val result = container.repo.agent(
+                    q, roleOverride = st.mode.takeIf { it.isNotBlank() },
+                    maxSteps = st.depth)
                 val item = when (result) {
-                    is RepoResult.Data -> ChatItem.Bot(result.value)
+                    is RepoResult.Data -> botItem(result.value)
                     is RepoResult.Error ->
                         ChatItem.Failure("${result.code}: ${result.message}")
                 }
@@ -151,6 +222,7 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
     }
 }
 
+@OptIn(ExperimentalLayoutApi::class)
 @Composable
 fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
     val container = rememberContainer()
@@ -196,6 +268,34 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                             )
                         }
                     }
+                    // 服務端通道：會話模式（角色面）+ 推理深度（max_steps）
+                    // ——只映射服務端真實存在的檔位（評審建議十）
+                    if (state.source == "server") {
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            AppSettings.AGENT_MODES.forEach { m ->
+                                FilterChip(
+                                    selected = state.mode == m,
+                                    enabled = !state.loading,
+                                    onClick = { vm.setMode(m) },
+                                    label = { Text(
+                                        AppSettings.AGENT_MODE_LABELS[m] ?: m,
+                                        style = MaterialTheme.typography.labelMedium) },
+                                )
+                            }
+                        }
+                        FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            AppSettings.AGENT_DEPTHS.forEach { d ->
+                                FilterChip(
+                                    selected = state.depth == d,
+                                    enabled = !state.loading,
+                                    onClick = { vm.setDepth(d) },
+                                    label = { Text(
+                                        "${AppSettings.AGENT_DEPTH_LABELS[d]}·${d}步",
+                                        style = MaterialTheme.typography.labelMedium) },
+                                )
+                            }
+                        }
+                    }
                     Text(
                         if (state.source == "direct")
                             "直连模式：本地 BM25 先取证据条文 → 大模型作答 → " +
@@ -227,7 +327,7 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                                 .padding(horizontal = 12.dp, vertical = 8.dp),
                         )
                     }
-                    is ChatItem.Bot -> BotCard(item.data, state.simplified, onOpenClause)
+                    is ChatItem.Bot -> BotCard(item, state.simplified, onOpenClause)
                     is ChatItem.Streaming -> Card {
                         Column(Modifier.padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)) {
@@ -263,13 +363,11 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                     }
                 }
             }
-            if (state.loading) {
-                item {
-                    Row(Modifier.fillMaxWidth().padding(8.dp),
-                        horizontalArrangement = Arrangement.Center) {
-                        CircularProgressIndicator(Modifier.padding(4.dp))
-                    }
-                }
+            if (state.loading && state.source == "server") {
+                // 服務端多步執行不可中途觀測（無 SSE）：只顯示真實流水線
+                // 說明與已用時，完成後由真 trace 補上執行過程（直連通道
+                // 另有 Streaming 卡實時顯示步驟）
+                item { RunningCard() }
             }
         }
         Row(
@@ -301,10 +399,11 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
 private fun BotCard(
-    data: AgentData,
+    item: ChatItem.Bot,
     simplified: Boolean,
     onOpenClause: (String) -> Unit,
 ) {
+    val data = item.data
     if (data.refused) {
         Card(
             colors = CardDefaults.cardColors(
@@ -320,6 +419,9 @@ private fun BotCard(
                 Text((data.message ?: "").display(simplified),
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.onErrorContainer)
+                if (item.trace.isNotEmpty()) {
+                    TraceSection(item.trace)
+                }
                 if (data.safetyNotice.isNotBlank()) {
                     SafetyNoticeBar(data.safetyNotice.display(simplified))
                 }
@@ -345,6 +447,8 @@ private fun BotCard(
                         color = MaterialTheme.colorScheme.outline)
                 }
             }
+
+            // 結論
             Text(
                 (data.answer ?: data.message ?: "").display(simplified),
                 style = MaterialTheme.typography.bodyMedium,
@@ -354,30 +458,182 @@ private fun BotCard(
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
+
             val unsupported = data.citationReport?.unsupported.orEmpty()
             if (unsupported.isNotEmpty()) {
                 Text("未获证据支持的引用：${unsupported.joinToString("、")}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.error)
             }
-            if (data.evidenceClauseIds.isNotEmpty()) {
-                FlowRow(horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    data.evidenceClauseIds.distinct().take(8).forEach { cid ->
-                        SuggestionChip(
-                            onClick = { onOpenClause(cid) },
-                            label = { Text(cid, style = MaterialTheme.typography.labelSmall) },
-                        )
-                    }
+
+            // Evidence Card（評審建議三）：原文摘錄·出處·分層·星級·點擊回源
+            if (item.evidence.isNotEmpty()) {
+                Text(stringResource(R.string.agent_evidence_title),
+                    style = MaterialTheme.typography.titleSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary)
+                item.evidence.forEach { ev ->
+                    EvidenceCard(ev, simplified, onOpenClause)
                 }
             }
+
+            // 執行過程（評審建議二：真實 agent_trace，非動畫）
+            if (item.trace.isNotEmpty()) {
+                TraceSection(item.trace)
+            }
+
             if (data.toolsUsed.isNotEmpty()) {
-                Text("工具：${data.toolsUsed.joinToString("、")}",
+                Text("工具：${data.toolsUsed.distinct().joinToString("、")}",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.outline)
             }
             if (data.safetyNotice.isNotBlank()) {
                 SafetyNoticeBar(data.safetyNotice.display(simplified))
+            }
+        }
+    }
+}
+
+/** 單條證據卡：出處 · 分層徽章 · 星級 · 原文摘錄 · 點擊回源。 */
+@Composable
+private fun EvidenceCard(
+    ev: EvidenceCardData,
+    simplified: Boolean,
+    onOpenClause: (String) -> Unit,
+) {
+    Card(
+        modifier = Modifier.fillMaxWidth().clickable { onOpenClause(ev.clauseId) },
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+    ) {
+        Column(Modifier.padding(10.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Text(
+                    ev.clauseNumber?.let { "《伤寒论》第 $it 条" } ?: ev.clauseId,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                LayerBadge(ev.layer)
+                Spacer(Modifier.weight(1f))
+                Text(
+                    ev.grade.starsText(),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.secondary,
+                )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text(
+                    ev.grade.label,
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+                if (ev.chapter.isNotBlank()) {
+                    Text(
+                        ev.chapter.display(simplified),
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline,
+                    )
+                }
+            }
+            if (ev.excerpt.isNotBlank()) {
+                Text(
+                    "「${ev.excerpt.display(simplified)}」",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontStyle = FontStyle.Italic,
+                    maxLines = 3,
+                )
+            } else {
+                Text(stringResource(R.string.agent_evidence_remote_only),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = MaterialTheme.colorScheme.outline)
+            }
+        }
+    }
+}
+
+/** 執行過程折疊區：真實 trace 步驟，⚠ 標記反思/攔截/預算類事件。 */
+@Composable
+private fun TraceSection(trace: List<TraceStepView>) {
+    var expanded by remember { mutableStateOf(false) }
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(
+            Modifier.clickable { expanded = !expanded },
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Text(
+                stringResource(R.string.agent_trace_title, trace.size),
+                style = MaterialTheme.typography.labelMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Icon(
+                if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+        if (expanded) {
+            trace.forEach { step ->
+                Row(
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(
+                        if (step.warning) Icons.Filled.Warning
+                        else Icons.Filled.CheckCircle,
+                        contentDescription = null,
+                        modifier = Modifier.size(14.dp).padding(top = 1.dp),
+                        tint = if (step.warning) MaterialTheme.colorScheme.error
+                        else Color(0xFF2E7D32),
+                    )
+                    Column {
+                        Text(step.label,
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Medium)
+                        if (step.detail.isNotBlank()) {
+                            Text(step.detail,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** 服務端等待卡：誠實呈現流水線說明與已用時，不偽造分步動畫。 */
+@Composable
+private fun RunningCard() {
+    var elapsed by remember { mutableIntStateOf(0) }
+    LaunchedEffect(Unit) {
+        while (true) {
+            delay(1000)
+            elapsed++
+        }
+    }
+    Card {
+        Row(
+            Modifier.padding(12.dp),
+            verticalAlignment = Alignment.CenterVertically,
+            horizontalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            CircularProgressIndicator(Modifier.size(22.dp))
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    stringResource(R.string.agent_running, elapsed),
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                )
+                Text(
+                    stringResource(R.string.agent_running_pipeline),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

@@ -20,11 +20,13 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AutoAwesome
+import androidx.compose.material.icons.filled.AutoStories
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -41,6 +43,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
@@ -52,6 +55,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.impfai.hermes.AppContainer
+import java.time.LocalDate
 import org.impfai.hermes.BuildConfig
 import org.impfai.hermes.core.model.SearchHit
 import org.impfai.hermes.data.ServerStatus
@@ -72,6 +76,7 @@ class HomeViewModel(private val container: AppContainer) : ViewModel() {
         val simplified: Boolean = true,
         val vipContent: Boolean = false,
         val skillsAvailable: Boolean = false,
+        val dailyClause: SearchHit? = null,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -86,6 +91,7 @@ class HomeViewModel(private val container: AppContainer) : ViewModel() {
             val settings = container.settings.current()
             val (total, canonical) = container.repo.localStats()
             val favorites = container.repo.favoriteHits()
+            val daily = container.localStore.dailyHit(LocalDate.now().toEpochDay())
             val status = if (settings.offlineOnly) null else container.repo.serverStatus()
             _state.value = UiState(
                 loading = false,
@@ -96,6 +102,7 @@ class HomeViewModel(private val container: AppContainer) : ViewModel() {
                 simplified = settings.simplifiedDisplay,
                 vipContent = container.localStore.vipContentAvailable(),
                 skillsAvailable = container.skillStore.available(),
+                dailyClause = daily,
             )
         }
     }
@@ -179,6 +186,41 @@ fun HomeScreen(
             Modifier.padding(horizontal = 16.dp),
             verticalArrangement = Arrangement.spacedBy(14.dp),
         ) {
+
+        // 今日條文：按天確定性輪換核心條文（每日學習鉤子，評審建議八）
+        state.dailyClause?.let { hit ->
+            Card(
+                Modifier.fillMaxWidth().clickable { onOpenClause(hit.clauseId) },
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer
+                        .copy(alpha = 0.35f)),
+            ) {
+                Column(Modifier.padding(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Filled.AutoStories, contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary)
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            "今日条文 · 第 ${hit.clauseNumber ?: "?"} 条",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    Text(
+                        hit.text.display(state.simplified),
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontStyle = FontStyle.Italic,
+                        maxLines = 3,
+                    )
+                    hit.sixChannel?.let { ch ->
+                        Text(ch.display(state.simplified),
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                }
+            }
+        }
 
         // 服務端狀態卡
         Card(Modifier.fillMaxWidth()) {

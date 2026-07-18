@@ -17,6 +17,7 @@ import androidx.compose.material.icons.filled.VisibilityOff
 import androidx.compose.material3.Button
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -48,6 +49,7 @@ import org.impfai.hermes.core.llm.DirectLlm
 import org.impfai.hermes.core.settings.AppSettings
 import org.impfai.hermes.data.ServerStatus
 import org.impfai.hermes.ui.common.NoticeBar
+import org.impfai.hermes.core.audit.AuditLog
 import org.impfai.hermes.ui.common.SectionCard
 import org.impfai.hermes.ui.common.rememberContainer
 
@@ -73,6 +75,9 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
         val llmTesting: Boolean = false,
         val llmTestResult: String = "",
         val llmTestOk: Boolean = false,
+        val secureStorage: Boolean = true,
+        val auditCount: Int = 0,
+        val auditEntries: List<AuditLog.Entry> = emptyList(),
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -88,7 +93,25 @@ class SettingsViewModel(private val container: AppContainer) : ViewModel() {
                 llmProvider = s.llmProvider, llmApiKey = s.llmApiKey,
                 llmBaseUrl = s.llmBaseUrl, llmModel = s.llmModel,
                 llmMaxTokens = s.llmMaxTokens.toString(),
+                secureStorage = s.secureTokenStorage,
             )
+            loadAudit()
+        }
+    }
+
+    fun loadAudit() {
+        viewModelScope.launch {
+            _state.value = _state.value.copy(
+                auditCount = container.auditLog.count(),
+                auditEntries = container.auditLog.recent(20),
+            )
+        }
+    }
+
+    fun clearAudit() {
+        viewModelScope.launch {
+            container.auditLog.clear()
+            loadAudit()
         }
     }
 
@@ -200,6 +223,7 @@ fun SettingsScreen() {
     val state by vm.state.collectAsStateWithLifecycle()
     var showToken by remember { mutableStateOf(false) }
     var showLlmKey by remember { mutableStateOf(false) }
+    var showAudit by remember { mutableStateOf(false) }
 
     Column(
         Modifier
@@ -280,17 +304,23 @@ fun SettingsScreen() {
                 )
             }
             Text(
-                "本应用不保存任何模型供应商密钥（OpenAI/Anthropic 等仅存在于服务端）；" +
-                    "此处令牌只是 Hermes 服务端签发的角色绑定访问 Key。",
+                if (state.secureStorage)
+                    "此处令牌只是 Hermes 服务端签发的角色绑定访问 Key，" +
+                        "已经 Android Keystore 加密存储（EncryptedSharedPreferences）。"
+                else
+                    "警告：本机 Keystore 不可用，令牌暂以明文存储——" +
+                        "请勿在此设备保存高权限令牌。",
                 style = MaterialTheme.typography.labelSmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (state.secureStorage)
+                    MaterialTheme.colorScheme.onSurfaceVariant
+                else MaterialTheme.colorScheme.error,
             )
         }
 
         if (BuildConfig.VIP) {
             SectionCard("直连大模型（VIP · BYOK）") {
-                Text("自带 API Key 直连模型服务商；Key 仅保存在本机" +
-                    "（不随云备份、不发送到 Hermes 服务端）。",
+                Text("自带 API Key 直连模型服务商；Key 经 Android Keystore " +
+                    "加密仅存本机（不随云备份、不发送到 Hermes 服务端）。",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant)
                 Text("一键预设（填好端点与模型名，只需再填 Key）：",
@@ -406,6 +436,69 @@ fun SettingsScreen() {
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
                 Switch(checked = state.offlineOnly, onCheckedChange = vm::setOfflineOnly)
+            }
+        }
+
+        // 諮詢審計記錄（外部評審建議七：本機審計軌跡；直連模式沒有
+        // 服務端審計，這裡是唯一證據記錄）
+        SectionCard("咨询审计记录（本机）") {
+            Text(
+                "共 ${state.auditCount} 条。记录每次智能体问答（服务端/直连）与" +
+                    "方证匹配的证据轨迹：问题、角色、后端、证据条文、核验结果。" +
+                    "仅保存在本机，用于自查与教学复盘。",
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedButton(onClick = {
+                    showAudit = !showAudit
+                    if (showAudit) vm.loadAudit()
+                }) {
+                    Text(if (showAudit) "收起" else "查看最近记录")
+                }
+                if (state.auditCount > 0) {
+                    TextButton(onClick = vm::clearAudit) {
+                        Text("清除全部", color = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+            if (showAudit) {
+                if (state.auditEntries.isEmpty()) {
+                    Text("暂无记录", style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                state.auditEntries.forEach { e ->
+                    Column(Modifier.padding(vertical = 4.dp)) {
+                        Text(
+                            "${e.caseId} · " + when (e.kind) {
+                                "agent" -> "智能体·服务端"
+                                "direct" -> "智能体·直连"
+                                else -> "方证匹配"
+                            } + ((e.effectiveRole ?: e.requestedRole)
+                                .takeIf { it.isNotBlank() }?.let { " · $it" } ?: ""),
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.primary,
+                        )
+                        Text(e.input, style = MaterialTheme.typography.bodySmall,
+                            maxLines = 2)
+                        Text(
+                            buildString {
+                                append(e.verdict)
+                                if (e.resultCode != "OK") append(" · ${e.resultCode}")
+                                if (e.backend.isNotBlank()) append(" · ${e.backend}")
+                                if (e.evidence.isNotEmpty()) {
+                                    append(" · 证据 ${e.evidence.size} 条")
+                                }
+                            },
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (e.refused || e.resultCode != "OK")
+                                MaterialTheme.colorScheme.error
+                            else MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                        HorizontalDivider(Modifier.padding(top = 4.dp))
+                    }
+                }
             }
         }
 
