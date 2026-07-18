@@ -30,8 +30,16 @@ import org.impfai.hermes.ui.agent.AgentScreen
 import org.impfai.hermes.ui.clause.ClauseScreen
 import org.impfai.hermes.ui.home.HomeScreen
 import org.impfai.hermes.ui.match.MatchScreen
+import org.impfai.hermes.ui.features.DifferentialScreen
+import org.impfai.hermes.ui.features.MistreatScreen
+import org.impfai.hermes.ui.features.TeachScreen
+import org.impfai.hermes.ui.features.TraceScreen
+import org.impfai.hermes.ui.library.LibraryScreen
+import org.impfai.hermes.ui.library.ReaderScreen
+import org.impfai.hermes.ui.research.ResearchScreen
 import org.impfai.hermes.ui.search.SearchScreen
 import org.impfai.hermes.ui.settings.SettingsScreen
+import org.impfai.hermes.ui.skills.SkillsScreen
 
 data class TopDestination(
     val route: String,
@@ -72,7 +80,6 @@ fun AppRoot() {
             NavigationBar {
                 TOP_DESTINATIONS.forEach { dest ->
                     val selected = currentRoute?.startsWith(dest.route) == true
-                    val label = stringResource(dest.labelRes)
                     NavigationBarItem(
                         selected = selected,
                         onClick = {
@@ -84,8 +91,8 @@ fun AppRoot() {
                                 restoreState = true
                             }
                         },
-                        icon = { Icon(dest.icon, contentDescription = label) },
-                        label = { Text(label) },
+                        icon = { Icon(dest.icon, contentDescription = stringResource(dest.labelRes)) },
+                        label = { Text(stringResource(dest.labelRes)) },
                     )
                 }
             }
@@ -99,21 +106,12 @@ fun AppRoot() {
             modifier = Modifier.padding(padding).consumeWindowInsets(padding),
         ) {
             composable("home") {
-                val openTab: (String) -> Unit = { route ->
-                    navController.navigate(route) {
-                        popUpTo(navController.graph.findStartDestination().id) {
-                            saveState = true
-                        }
-                        launchSingleTop = true
-                        restoreState = true
-                    }
-                }
                 HomeScreen(
                     onOpenSearch = { q, ch -> navController.openSearch(q, ch) },
                     onOpenClause = { navController.openClause(it) },
-                    onOpenSettings = { openTab("settings") },
-                    onOpenAgent = { openTab("agent") },
-                    onOpenMatch = { openTab("match") },
+                    onOpenSettings = { navController.navigate("settings") },
+                    onOpenSkills = { navController.navigate("skills") },
+                    onOpenFeature = { navController.navigate(it) },
                 )
             }
             composable(
@@ -122,14 +120,24 @@ fun AppRoot() {
                     navArgument("query") { defaultValue = "" },
                     navArgument("channel") { defaultValue = "" },
                 ),
-            ) {
-                SearchScreen(onOpenClause = { navController.openClause(it) })
+            ) { entry ->
+                SearchScreen(
+                    onOpenClause = { navController.openClause(it) },
+                    initialQuery = entry.arguments?.getString("query") ?: "",
+                    initialChannel = entry.arguments?.getString("channel") ?: "",
+                )
             }
             composable("match") {
                 MatchScreen(onOpenClause = { navController.openClause(it) })
             }
-            composable("agent") {
-                AgentScreen(onOpenClause = { navController.openClause(it) })
+            composable(
+                route = "agent?prefill={prefill}",
+                arguments = listOf(navArgument("prefill") { defaultValue = "" }),
+            ) { entry ->
+                AgentScreen(
+                    onOpenClause = { navController.openClause(it) },
+                    prefill = entry.arguments?.getString("prefill") ?: "",
+                )
             }
             composable("settings") {
                 SettingsScreen()
@@ -139,6 +147,63 @@ fun AppRoot() {
                 ClauseScreen(
                     clauseRef = ref,
                     onOpenClause = { navController.openClause(it) },
+                    onBack = { navController.popBackStack() },
+                    onAskAi = { question ->
+                        navController.navigate(
+                            "agent?prefill=${android.net.Uri.encode(question)}")
+                    },
+                    onOpenBook = { book, locate ->
+                        navController.navigate(
+                            "reader?title=${android.net.Uri.encode(book)}" +
+                                "&section=&locate=${android.net.Uri.encode(locate)}")
+                    },
+                )
+            }
+            composable("skills") {
+                SkillsScreen(onBack = { navController.popBackStack() })
+            }
+            composable("teach") {
+                TeachScreen(onOpenClause = { navController.openClause(it) },
+                    onBack = { navController.popBackStack() })
+            }
+            composable("differential") {
+                DifferentialScreen(onOpenClause = { navController.openClause(it) },
+                    onBack = { navController.popBackStack() })
+            }
+            composable("mistreat") {
+                MistreatScreen(onOpenClause = { navController.openClause(it) },
+                    onBack = { navController.popBackStack() })
+            }
+            composable("research") {
+                ResearchScreen(onOpenClause = { navController.openClause(it) },
+                    onBack = { navController.popBackStack() })
+            }
+            composable("trace") {
+                TraceScreen(onOpenClause = { navController.openClause(it) },
+                    onBack = { navController.popBackStack() })
+            }
+            composable("library") {
+                LibraryScreen(
+                    onBack = { navController.popBackStack() },
+                    onOpenBook = { bookId, section ->
+                        navController.navigate(
+                            "reader?title=${android.net.Uri.encode(bookId)}" +
+                                "&section=${android.net.Uri.encode(section)}")
+                    },
+                )
+            }
+            composable(
+                route = "reader?title={title}&section={section}&locate={locate}",
+                arguments = listOf(
+                    navArgument("title") { defaultValue = "" },
+                    navArgument("section") { defaultValue = "" },
+                    navArgument("locate") { defaultValue = "" },
+                ),
+            ) { entry ->
+                ReaderScreen(
+                    titleOrId = entry.arguments?.getString("title") ?: "",
+                    initialSection = entry.arguments?.getString("section") ?: "",
+                    locateText = entry.arguments?.getString("locate") ?: "",
                     onBack = { navController.popBackStack() },
                 )
             }

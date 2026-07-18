@@ -29,8 +29,24 @@ android {
         applicationId = "org.impfai.hermes"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 8
+        versionName = "1.7.0"
+    }
+
+    // standard：知識閱讀 + 服務端接入
+    // vip     ：全量傷寒論知識庫/Skill 內置 + BYOK 直連大模型（密鑰僅存本機）
+    flavorDimensions += "edition"
+    productFlavors {
+        create("standard") {
+            dimension = "edition"
+            buildConfigField("boolean", "VIP", "false")
+        }
+        create("vip") {
+            dimension = "edition"
+            applicationIdSuffix = ".vip"
+            versionNameSuffix = "-vip"
+            buildConfigField("boolean", "VIP", "true")
+        }
     }
 
     signingConfigs {
@@ -77,6 +93,12 @@ android {
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
+    testOptions {
+        unitTests {
+            // Robolectric：JVM 上帶真實資產/資源運行 Compose UI 冒煙測試
+            isIncludeAndroidResources = true
+        }
+    }
 }
 
 // 離線語料唯一真源是 backend/data/shanghan —— 構建期複製進 assets，
@@ -89,6 +111,51 @@ val copyCorpusAssets = tasks.register<Copy>("copyCorpusAssets") {
 }
 android.sourceSets.getByName("main").assets.srcDir(corpusAssets)
 tasks.named("preBuild") { dependsOn(copyCorpusAssets) }
+
+// VIP 資產包：全量規則庫（注家/異文/關係/初始/六經/鑒別/誤治/治法）
+// + 139 個 Skill + 語料 manifest —— 僅 vip flavor 打入 APK
+val vipAssets = layout.buildDirectory.dir("generated/vipAssets")
+val copyVipAssets = tasks.register<Copy>("copyVipAssets") {
+    val base = rootProject.file("../backend/data/shanghan")
+    into(vipAssets)
+    into("shanghan") {
+        from(base.resolve("relations/clause_relations.jsonl"))
+        from(base.resolve("rules_commentary/commentary_rules.jsonl"))
+        from(base.resolve("rules_variant/variant_rules.jsonl"))
+        from(base.resolve("rules_initial/initial_rules.jsonl"))
+        from(base.resolve("rules_six_channel/six_channel_rules.jsonl"))
+        from(base.resolve("rules_differential/differential_rules.jsonl"))
+        from(base.resolve("rules_mistreatment/mistreatment_rules.jsonl"))
+        from(base.resolve("rules_therapy/therapy_rules.jsonl"))
+        from(base.resolve("manifest/corpus_manifest.json"))
+    }
+    into("skills") {
+        from(rootProject.file("../backend/data/skills/shanghanlun"))
+    }
+    // 全量古籍庫（803 部 / 317MB；tools/prepare_library.md 生成，不入 git）
+    // library-pack 缺失或 -PvipLite 時 VIP 照常構建（VIP-lite），
+    // 古籍庫界面顯示「未內置」引導
+    val libraryPack = rootProject.file("library-pack")
+    if (libraryPack.isDirectory && !project.hasProperty("vipLite")) {
+        into("library") { from(libraryPack) }
+    }
+    // Skill 索引文件：AssetManager.list() 對子目錄的行為因環境而異
+    //（Robolectric 只返回文件），改為構建期生成清單，運行時直讀。
+    // 文件名不得以下劃線開頭（AAPT 資產打包默認忽略 _* 模式）。
+    doLast {
+        val root = rootProject.file("../backend/data/skills/shanghanlun")
+        val entries = root.walkTopDown()
+            .filter { it.isFile && it.name == "SKILL.md" }
+            .map { it.parentFile.relativeTo(root).invariantSeparatorsPath }
+            .sorted()
+            .toList()
+        val index = vipAssets.get().asFile.resolve("skills_index.txt")
+        index.parentFile.mkdirs()
+        index.writeText(entries.joinToString("\n"))
+    }
+}
+android.sourceSets.getByName("vip").assets.srcDir(vipAssets)
+tasks.named("preBuild") { dependsOn(copyVipAssets) }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.12.01")
@@ -119,4 +186,10 @@ dependencies {
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.jetbrains.kotlinx:kotlinx-coroutines-test:1.9.0")
+    testImplementation(composeBom)
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.test.ext:junit:1.2.1")
+    testImplementation("androidx.test:core:1.6.1")
+    testImplementation("androidx.compose.ui:ui-test-junit4")
+    testImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
 }

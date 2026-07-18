@@ -13,8 +13,10 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.Card
@@ -27,10 +29,12 @@ import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.SuggestionChip
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.SavedStateHandle
 import androidx.lifecycle.ViewModel
@@ -76,14 +80,29 @@ class SearchViewModel(
     )
     val state: StateFlow<UiState> = _state
 
+    private var lastApplied: Pair<String, String>? = null
+
     init {
         viewModelScope.launch {
             val s = container.settings.current()
             _state.value = _state.value.copy(simplified = s.simplifiedDisplay)
             if (_state.value.query.isNotBlank() || _state.value.channel.isNotBlank()) {
+                lastApplied = _state.value.query to _state.value.channel
                 search()
             }
         }
+    }
+
+    /** 首頁跳轉攜帶的新參數：launchSingleTop 復用同一 VM，init 時的
+     *  SavedStateHandle 是舊值——必須由 UI 層把當前 NavBackStackEntry
+     *  參數餵進來（v1.1「首頁輸入後不檢索」的根因）。 */
+    fun applyExternalArgs(query: String, channel: String) {
+        if (query.isBlank() && channel.isBlank()) return
+        val pair = query to channel
+        if (pair == lastApplied) return
+        lastApplied = pair
+        _state.value = _state.value.copy(query = query, channel = channel)
+        search()
     }
 
     fun onQueryChange(q: String) {
@@ -122,12 +141,21 @@ class SearchViewModel(
 
 @OptIn(ExperimentalLayoutApi::class)
 @Composable
-fun SearchScreen(onOpenClause: (String) -> Unit) {
+fun SearchScreen(
+    onOpenClause: (String) -> Unit,
+    initialQuery: String = "",
+    initialChannel: String = "",
+) {
     val container = rememberContainer()
     val vm: SearchViewModel = viewModel {
         SearchViewModel(container, createSavedStateHandle())
     }
     val state by vm.state.collectAsStateWithLifecycle()
+
+    // 首頁跳轉的新參數（launchSingleTop 下 VM 復用，必須顯式應用）
+    LaunchedEffect(initialQuery, initialChannel) {
+        vm.applyExternalArgs(initialQuery, initialChannel)
+    }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Spacer(Modifier.width(0.dp))
@@ -142,6 +170,8 @@ fun SearchScreen(onOpenClause: (String) -> Unit) {
                 }
             },
             singleLine = true,
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = { vm.search() }),
         )
         Row(
             Modifier
@@ -183,7 +213,10 @@ fun SearchScreen(onOpenClause: (String) -> Unit) {
                         color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
-            items(state.hits, key = { it.clauseId + it.matchSource }) { hit ->
+            // key 帶序號：關係擴展等場景同一條文可能重複出現，
+            // 純 clauseId key 會因重複直接崩潰（v1.2 閃退加固）
+            itemsIndexed(state.hits,
+                key = { i, hit -> "$i:${hit.clauseId}" }) { _, hit ->
                 Card(
                     Modifier
                         .fillMaxWidth()

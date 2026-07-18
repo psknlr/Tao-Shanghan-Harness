@@ -52,7 +52,15 @@ class SecureTokenStore(context: Context) {
         prefs.edit().putString(KEY_TOKEN, token.trim()).apply()
     }
 
+    /** VIP BYOK 直連大模型的供應商 API Key——密級最高的本機秘密。 */
+    fun llmApiKey(): String = prefs.getString(KEY_LLM_API_KEY, "") ?: ""
+
+    fun setLlmApiKey(key: String) {
+        prefs.edit().putString(KEY_LLM_API_KEY, key.trim()).apply()
+    }
+
     private companion object {
         const val KEY_TOKEN = "api_token"
+        const val KEY_LLM_API_KEY = "llm_api_key"
     }
 }
