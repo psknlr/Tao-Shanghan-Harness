@@ -370,7 +370,20 @@ fun ReaderScreen(
     var pages by remember { mutableStateOf(listOf<ReaderPage>()) }
     var paginating by remember { mutableStateOf(false) }
     var contentKey by remember { mutableStateOf("") }
-    val pagerState = rememberPagerState { pages.size.coerceAtLeast(1) }
+    // 跨章連讀（v1.12）：頁列表前後掛「上一章/下一章」邊界頁——
+    // 滑到邊界頁即自動開相鄰章節；pageOffset 為內容頁在 pager 中的偏移
+    var pendingJumpEnd by remember { mutableStateOf(false) }
+    val tocIdx = remember(state.toc, state.section) {
+        state.toc.indexOfFirst { it.title == state.section }
+    }
+    val prevSection = if (tocIdx > 0) state.toc[tocIdx - 1].title else null
+    val nextSection = if (tocIdx >= 0 && tocIdx < state.toc.size - 1 &&
+        !state.truncated) state.toc[tocIdx + 1].title else null
+    val pageOffset = if (prevSection != null) 1 else 0
+    val pagerState = rememberPagerState {
+        if (pages.isEmpty()) 1
+        else pages.size + pageOffset + (if (nextSection != null) 1 else 0)
+    }
 
     // —— 選中/批注狀態（v1.6 #3：原文長按拖曳劃線）——
     var sel by remember { mutableStateOf<SelInfo?>(null) }
@@ -388,13 +401,30 @@ fun ReaderScreen(
     // 翻頁即取消選中
     LaunchedEffect(pagerState.currentPage) { sel = null }
 
+    // 滑到邊界頁 → 自動開上一章（落到其末頁）/下一章（落到首頁）
+    LaunchedEffect(pagerState.settledPage, pages.size, pageOffset) {
+        // 排版中/定位開卷未完成時不觸發——換章重排後 settledPage 仍停在
+        // 舊索引，直接判斷會把邊界頁誤讀成「再開上一章」（時序競爭）
+        if (paginating || pages.isEmpty() ||
+            state.targetPara != null) return@LaunchedEffect
+        val contentIdx = pagerState.settledPage - pageOffset
+        when {
+            contentIdx < 0 && prevSection != null -> {
+                pendingJumpEnd = true
+                vm.open(prevSection)
+            }
+            contentIdx >= pages.size && nextSection != null ->
+                vm.open(nextSection)
+        }
+    }
+
     // 閱讀進度自動保存：翻頁即記錄，下次打開該書自動續讀。
     // lastSavedPara 同時是重排（字號/簡繁）的回位錨點——排版中的
     // 半成品頁列表不可作記錄源（v1.11 簡繁切換漂移修復）
     var lastSavedPara by remember { mutableStateOf(-1) }
     LaunchedEffect(pagerState.currentPage, pages.size, paginating) {
         if (paginating || pages.isEmpty()) return@LaunchedEffect
-        val p = pages.getOrNull(pagerState.currentPage)
+        val p = pages.getOrNull(pagerState.currentPage - pageOffset)
             ?.chunks?.firstOrNull()?.paraIndex ?: return@LaunchedEffect
         if (p != lastSavedPara) {
             lastSavedPara = p
@@ -419,7 +449,7 @@ fun ReaderScreen(
             p.chunks.any { it.paraIndex == t }
         }
         if (idx >= 0) {
-            pagerState.scrollToPage(idx)
+            pagerState.scrollToPage(idx + pageOffset)
             flashPara = t
             vm.clearTarget()
             delay(2200)
@@ -440,7 +470,7 @@ fun ReaderScreen(
     Scaffold(
         containerColor = theme.bg,
         topBar = {
-            val curPara = pages.getOrNull(pagerState.currentPage)
+            val curPara = pages.getOrNull(pagerState.currentPage - pageOffset)
                 ?.chunks?.firstOrNull()?.paraIndex
             val pageBookmark = state.annotations.firstOrNull {
                 it.kind == AnnotationStore.Kind.BOOKMARK.name &&
@@ -497,7 +527,8 @@ fun ReaderScreen(
             if (state.loaded && !state.missing) {
                 Column(Modifier.background(theme.bg)) {
                     val total = pages.size.coerceAtLeast(1)
-                    val cur = pagerState.currentPage.coerceIn(0, total - 1)
+                    val cur = (pagerState.currentPage - pageOffset)
+                        .coerceIn(0, total - 1)
                     LinearProgressIndicator(
                         progress = { (cur + 1f) / total },
                         modifier = Modifier.fillMaxWidth().height(2.dp),
@@ -632,7 +663,10 @@ fun ReaderScreen(
                 }.display(state.simplified)
 
                 // —— 分頁排版（後台增量構建，先出前頁後出全書）——
-                LaunchedEffect(state.paras, state.fontSize, state.simplified,
+                // 分頁永遠按繁體原文排版（t2s 一字對一字、長度不變，
+                // 簡繁轉換移到渲染層）——切換簡繁不再觸發重排，全書
+                // 瞬時統一生效（v1.12 根治「後面頁面還是繁體」）
+                LaunchedEffect(state.paras, state.fontSize,
                     contentWidthPx, pageHeightPx.roundToInt(),
                     lineHeightPx.roundToInt()) {
                     if (state.paras.isEmpty()) {
@@ -653,7 +687,7 @@ fun ReaderScreen(
                     contentKey = newKey
                     paginating = true
                     val paras = state.paras
-                    val simplified = state.simplified
+                    val prevCount = pages.size
                     withContext(Dispatchers.Default) {
                         val headerLayout = measurer.measure(
                             AnnotatedString(headerTitle), style = headerStyle,
@@ -667,8 +701,7 @@ fun ReaderScreen(
                         var lastEmit = 0
                         for (para in paras) {
                             yield()
-                            val disp = INDENT +
-                                para.text.display(simplified)
+                            val disp = INDENT + para.text
                             val layout = measurer.measure(
                                 AnnotatedString(disp), style = bodyStyle,
                                 constraints = Constraints(
@@ -686,11 +719,13 @@ fun ReaderScreen(
                                     } else {
                                         built.add(ReaderPage(cur))
                                         cur = ArrayList(); used = 0f
-                                        // 增量發布僅用於新開章節首屏加速；
-                                        // 同章重排（簡繁/字號）必須整體一次
-                                        // 換列表——半成品列表會把 pager 位置
-                                        // 鉗回小索引（v1.11 修復）
-                                        if (!sameContent &&
+                                        // 增量發布：新開章節首屏加速；同章
+                                        // 重排僅當新列表已長於舊列表（追加
+                                        // 續載場景）才增量——短於舊列表的
+                                        // 半成品會把 pager 位置鉗回小索引
+                                        //（v1.11/v1.12）
+                                        if ((!sameContent ||
+                                                built.size >= prevCount) &&
                                             built.size - lastEmit >= 6) {
                                             pages = built.toList()
                                             lastEmit = built.size
@@ -710,15 +745,25 @@ fun ReaderScreen(
                         if (cur.isNotEmpty()) built.add(ReaderPage(cur))
                         pages = built.toList()
                     }
-                    paginating = false
-                    // 字號/簡繁/續載重排後回到原閱讀位置（段序錨點；
+                    // 定位完成前保持 paginating=true：邊界開章效應以此
+                    // 為閘，避免 settledPage 停在舊索引時被誤判
+                    // 字號/續載重排後回到原閱讀位置（段序錨點；
                     // 段 0 也是合法錨點——舊條件 anchor>0 會漏掉首段）
                     if (anchor != null && state.targetPara == null) {
                         val idx = pages.indexOfFirst { p ->
                             p.chunks.any { it.paraIndex == anchor }
                         }
-                        if (idx >= 0) pagerState.scrollToPage(idx)
+                        if (idx >= 0) pagerState.scrollToPage(idx + pageOffset)
                     }
+                    // 新開章節：定位到首個內容頁（跳過上一章邊界頁）；
+                    // 從邊界頁回上一章時落到其末頁（連讀體驗）
+                    if (!sameContent && state.targetPara == null) {
+                        val target = if (pendingJumpEnd) pages.size - 1 else 0
+                        pagerState.scrollToPage(
+                            target.coerceAtLeast(0) + pageOffset)
+                    }
+                    if (!sameContent) pendingJumpEnd = false
+                    paginating = false
                 }
 
                 when {
@@ -739,12 +784,27 @@ fun ReaderScreen(
                         state = pagerState,
                         modifier = Modifier.fillMaxSize(),
                         beyondViewportPageCount = 1,
-                    ) { pageIdx ->
-                        val page = pages.getOrNull(pageIdx)
+                    ) { pagerIdx ->
+                        val contentIdx = pagerIdx - pageOffset
+                        if (contentIdx < 0) {
+                            SectionBoundaryPage(theme,
+                                "← 上一章",
+                                (prevSection ?: "")
+                                    .display(state.simplified))
+                            return@HorizontalPager
+                        }
+                        if (contentIdx >= pages.size) {
+                            SectionBoundaryPage(theme,
+                                "下一章 →",
+                                (nextSection ?: "")
+                                    .display(state.simplified))
+                            return@HorizontalPager
+                        }
+                        val page = pages.getOrNull(contentIdx)
                             ?: return@HorizontalPager
                         PageView(
                             page = page,
-                            isFirst = pageIdx == 0,
+                            isFirst = contentIdx == 0,
                             headerTitle = headerTitle,
                             headerStyle = headerStyle,
                             theme = theme,
@@ -753,6 +813,7 @@ fun ReaderScreen(
                             annByPara = annByPara,
                             sel = sel,
                             flashPara = flashPara,
+                            simplified = state.simplified,
                             onSel = { sel = it },
                             onViewNote = { viewNote = it },
                         )
@@ -1013,6 +1074,7 @@ private fun PageView(
     annByPara: Map<Int, List<AnnotationStore.Annotation>>,
     sel: SelInfo?,
     flashPara: Int?,
+    simplified: Boolean,
     onSel: (SelInfo?) -> Unit,
     onViewNote: (AnnotationStore.Annotation) -> Unit,
 ) {
@@ -1045,8 +1107,34 @@ private fun PageView(
                 anns = annByPara[chunk.paraIndex].orEmpty(),
                 sel = sel, flash = flashPara == chunk.paraIndex,
                 theme = theme, style = bodyStyle,
+                simplified = simplified,
                 onSel = onSel, onViewNote = onViewNote,
             )
+        }
+    }
+}
+
+/** 章節邊界頁：滑到即自動開相鄰章節（見 settledPage 效應）。 */
+@Composable
+private fun SectionBoundaryPage(
+    theme: ReaderTheme,
+    direction: String,
+    sectionTitle: String,
+) {
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        CircularProgressIndicator(color = theme.accent)
+        Spacer(Modifier.height(14.dp))
+        Text(direction,
+            style = MaterialTheme.typography.titleMedium,
+            color = theme.fg.copy(alpha = 0.75f))
+        if (sectionTitle.isNotBlank()) {
+            Text(sectionTitle,
+                style = MaterialTheme.typography.bodyMedium,
+                color = theme.fg.copy(alpha = 0.5f))
         }
     }
 }
@@ -1062,6 +1150,7 @@ private fun ChunkText(
     flash: Boolean,
     theme: ReaderTheme,
     style: TextStyle,
+    simplified: Boolean,
     onSel: (SelInfo?) -> Unit,
     onViewNote: (AnnotationStore.Annotation) -> Unit,
 ) {
@@ -1070,9 +1159,10 @@ private fun ChunkText(
         mutableStateOf<TextLayoutResult?>(null)
     }
     val chunkEnd = chunk.dispStart + chunk.text.length
-    val annotated = remember(chunk, anns, sel, theme) {
+    // 渲染層簡繁轉換（t2s 一字對一字，選區/劃線偏移不受影響）
+    val annotated = remember(chunk, anns, sel, theme, simplified) {
         buildAnnotatedString {
-            append(chunk.text)
+            append(chunk.text.display(simplified))
             for (a in anns) {
                 if (a.kind == AnnotationStore.Kind.BOOKMARK.name) continue
                 val r = annDispRange(a, para)
