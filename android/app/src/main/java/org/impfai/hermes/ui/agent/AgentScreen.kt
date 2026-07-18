@@ -317,7 +317,16 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
                     }
                 }
                 val item = when (result) {
-                    is RepoResult.Data -> botItem(result.value)
+                    is RepoResult.Data -> botItem(result.value).let { bot ->
+                        // 直連回答無 agent_trace：把流式步驟時間線收進
+                        // 執行過程折疊區（完畢後折疊、點擊再展開）
+                        if (bot.trace.isEmpty() && steps.isNotEmpty()) {
+                            bot.copy(trace = steps.mapIndexed { i, label ->
+                                org.impfai.hermes.core.model.TraceStepView(
+                                    i + 1, label)
+                            })
+                        } else bot
+                    }
                     is RepoResult.Error ->
                         ChatItem.Failure("${result.code}: ${result.message}")
                 }
@@ -358,6 +367,24 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
         //（審查發現 #10：按 items.size-1 會停在倒數第二條）
         val last = listState.layoutInfo.totalItemsCount - 1
         if (last > 0) listState.animateScrollToItem(last)
+    }
+
+    // 流式跟隨：增量文本/新步驟到達時貼住底部（方便看最新輸出）；
+    // 用戶上滑離開直播邊緣（>800px）即停止跟隨，不搶閱讀位置
+    val streamSig = (state.items.lastOrNull() as? ChatItem.Streaming)
+        ?.let { it.steps.size * 1_000_000 + it.partial.length } ?: -1
+    LaunchedEffect(streamSig) {
+        if (streamSig < 0) return@LaunchedEffect
+        val info = listState.layoutInfo
+        val lastVisible = info.visibleItemsInfo.lastOrNull()
+            ?: return@LaunchedEffect
+        if (lastVisible.index < info.totalItemsCount - 1) return@LaunchedEffect
+        val bottomGap = (lastVisible.offset + lastVisible.size) -
+            info.viewportEndOffset
+        if (bottomGap < 800 && !listState.isScrollInProgress) {
+            listState.scrollToItem(
+                info.totalItemsCount - 1, scrollOffset = 1_000_000)
+        }
     }
 
     Column(Modifier.fillMaxSize().imePadding()) {
@@ -466,6 +493,15 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                     is ChatItem.Streaming -> Card {
                         Column(Modifier.padding(12.dp),
                             verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                            Row(verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                CircularProgressIndicator(Modifier.size(14.dp),
+                                    strokeWidth = 2.dp)
+                                Text("执行过程 · 进行中（完成后自动折叠）",
+                                    style = MaterialTheme.typography.labelMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
                             item.steps.forEach { s ->
                                 Text(s, style = MaterialTheme.typography.labelSmall,
                                     color = MaterialTheme.colorScheme.primary)
