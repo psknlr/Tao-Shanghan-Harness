@@ -26,8 +26,10 @@ import org.robolectric.annotation.Config
  * 注意：Robolectric 下 ComposeTestRule.waitUntil 不泵主循環，必須
  * waitForIdle + 輪詢（實測 waitUntil 直接 20s 超時而樹早已就緒）。
  */
+// qualifiers=zh-rCN：斷言中文界面文案，必須固定中文資源限定符——
+// Robolectric 默認 en-US，接入 values-en 後導航會渲染英文（v1.7 i18n）
 @RunWith(AndroidJUnit4::class)
-@Config(sdk = [34], application = HermesApp::class)
+@Config(sdk = [34], application = HermesApp::class, qualifiers = "zh-rCN")
 class SmokeUiTest {
 
     @get:Rule
