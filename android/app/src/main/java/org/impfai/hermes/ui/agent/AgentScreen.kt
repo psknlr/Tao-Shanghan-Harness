@@ -1,5 +1,8 @@
 package org.impfai.hermes.ui.agent
 
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -20,9 +23,11 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
@@ -44,11 +49,15 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -57,10 +66,12 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.doubleOrNull
 import androidx.compose.material3.FilterChip
@@ -77,6 +88,7 @@ import org.impfai.hermes.core.model.humanizeTrace
 import org.impfai.hermes.core.model.starsText
 import org.impfai.hermes.core.settings.AppSettings
 import org.impfai.hermes.data.RepoResult
+import org.impfai.hermes.engine.DocxWriter
 import org.impfai.hermes.ui.common.CitationBadge
 import org.impfai.hermes.ui.common.LayerBadge
 import org.impfai.hermes.ui.common.SafetyNoticeBar
@@ -184,6 +196,61 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
             }
             refreshHistory()
         }
+    }
+
+    /** 一鍵導出：當前對話 → DOCX 塊（問答分節 + 證據表 + 免責聲明）。 */
+    fun exportBlocks(): List<DocxWriter.Block> {
+        val st = _state.value
+        val b = ArrayList<DocxWriter.Block>()
+        b += DocxWriter.Block.Heading(1, "伤寒Hermes 智能体对话记录")
+        b += DocxWriter.Block.Para(
+            "导出时间：" + ChatHistoryStore.shortTime(
+                ChatHistoryStore.timestamp()) + "（UTC） · 通道：" +
+                (if (st.source == "direct") "VIP 直连大模型" else "Hermes 服务端") +
+                " · 消息 " + st.items.count { it !is ChatItem.Streaming } + " 条",
+            italic = true)
+        st.items.forEach { item ->
+            when (item) {
+                is ChatItem.User -> b += DocxWriter.Block.Heading(
+                    2, "问：" + item.text.display(st.simplified))
+                is ChatItem.Bot -> {
+                    val d = item.data
+                    b += DocxWriter.Block.Para(
+                        (d.answer ?: d.message ?: "").display(st.simplified))
+                    val report = d.citationReport
+                    b += DocxWriter.Block.Para(
+                        "引用核验：" + when {
+                            d.refused -> "安全闸门拒答"
+                            report != null && report.ok ->
+                                "已核验 " + report.verified.size + " 条"
+                            report != null && report.hasAnyCitation -> "部分核验"
+                            else -> "无引用"
+                        } + (d.backend?.let { " · 后端 " + it } ?: ""),
+                        italic = true)
+                    if (item.evidence.isNotEmpty()) {
+                        b += DocxWriter.Block.Table(
+                            listOf("证据条文", "出处", "证据等级", "原文摘录"),
+                            item.evidence.map { ev ->
+                                listOf(
+                                    ev.clauseNumber?.let { "第 " + it + " 条" }
+                                        ?: ev.clauseId,
+                                    ev.chapter.display(st.simplified),
+                                    ev.grade.label,
+                                    ev.excerpt.display(st.simplified).take(80),
+                                )
+                            })
+                    }
+                }
+                is ChatItem.Failure -> b += DocxWriter.Block.Para(
+                    "[请求失败] " + item.message, italic = true)
+                is ChatItem.Streaming -> {}
+            }
+        }
+        b += DocxWriter.Block.Para(
+            "免责声明：本对话由 AI 生成，供古籍学习与研究参考，" +
+                "不构成诊断或治疗建议；用药请务必咨询执业中医师。",
+            italic = true)
+        return b
     }
 
     /** 歷史消息 → 最小 AgentData（引用狀態按存檔檔位重建，不虛構明細）。 */
@@ -361,6 +428,33 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
     var input by remember(prefill) { mutableStateOf(prefill) }
     var showHistory by remember { mutableStateOf(false) }
     val listState = rememberLazyListState()
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+
+    // 一鍵導出 DOCX（SAF：用戶選保存位置，零存儲權限）
+    val exportLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.CreateDocument(
+            "application/vnd.openxmlformats-officedocument" +
+                ".wordprocessingml.document")
+    ) { uri ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val blocks = vm.exportBlocks()
+        scope.launch(Dispatchers.IO) {
+            val ok = try {
+                context.contentResolver.openOutputStream(uri)?.use { out ->
+                    DocxWriter.write(out, "伤寒Hermes 智能体对话记录", blocks)
+                    true
+                } ?: false
+            } catch (_: Exception) {
+                false
+            }
+            withContext(Dispatchers.Main) {
+                Toast.makeText(context,
+                    if (ok) "对话已导出为 DOCX" else "导出失败，请重试",
+                    Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     LaunchedEffect(state.items.size, state.loading) {
         // 列表首項是說明文字，末項可能是 loading 指示器——按實際總數滾動
@@ -401,6 +495,15 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                             style = MaterialTheme.typography.titleSmall,
                             fontWeight = FontWeight.Bold,
                             modifier = Modifier.weight(1f))
+                        TextButton(
+                            onClick = {
+                                exportLauncher.launch(
+                                    "伤寒Hermes对话-" + ChatHistoryStore
+                                        .shortTime(ChatHistoryStore.timestamp())
+                                        .replace(Regex("[^0-9]"), "") + ".docx")
+                            },
+                            enabled = !state.loading && state.items.isNotEmpty(),
+                        ) { Text("⬇ 导出") }
                         TextButton(onClick = {
                             vm.refreshHistory(); showHistory = true
                         }) { Text("🕘 历史") }
@@ -476,18 +579,21 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End,
                     ) {
-                        Text(
-                            item.text,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = MaterialTheme.colorScheme.onPrimaryContainer,
-                            modifier = Modifier
-                                .widthIn(max = 300.dp)
-                                .background(
-                                    MaterialTheme.colorScheme.primaryContainer,
-                                    RoundedCornerShape(14.dp),
-                                )
-                                .padding(horizontal = 12.dp, vertical = 8.dp),
-                        )
+                        // SelectionContainer：問題文本可長按自由選擇複製
+                        SelectionContainer {
+                            Text(
+                                item.text,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = MaterialTheme.colorScheme.onPrimaryContainer,
+                                modifier = Modifier
+                                    .widthIn(max = 300.dp)
+                                    .background(
+                                        MaterialTheme.colorScheme.primaryContainer,
+                                        RoundedCornerShape(14.dp),
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                            )
+                        }
                     }
                     is ChatItem.Bot -> BotCard(item, state.simplified, onOpenClause)
                     is ChatItem.Streaming -> Card {
@@ -507,8 +613,10 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                                     color = MaterialTheme.colorScheme.primary)
                             }
                             if (item.partial.isNotBlank()) {
-                                Text(item.partial.display(state.simplified) + " ▌",
-                                    style = MaterialTheme.typography.bodyMedium)
+                                SelectionContainer {
+                                    Text(item.partial.display(state.simplified) + " ▌",
+                                        style = MaterialTheme.typography.bodyMedium)
+                                }
                             } else {
                                 Row(verticalAlignment = Alignment.CenterVertically,
                                     horizontalArrangement =
@@ -657,9 +765,11 @@ private fun BotCard(
                     style = MaterialTheme.typography.labelMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onErrorContainer)
-                Text((data.message ?: "").display(simplified),
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onErrorContainer)
+                SelectionContainer {
+                    Text((data.message ?: "").display(simplified),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = MaterialTheme.colorScheme.onErrorContainer)
+                }
                 if (item.trace.isNotEmpty()) {
                     TraceSection(item.trace)
                 }
@@ -671,6 +781,7 @@ private fun BotCard(
         return
     }
 
+    val clipboard = LocalClipboardManager.current
     Card {
         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically,
@@ -687,13 +798,30 @@ private fun BotCard(
                     Text(it, style = MaterialTheme.typography.labelSmall,
                         color = MaterialTheme.colorScheme.outline)
                 }
+                Spacer(Modifier.weight(1f))
+                // 一鍵複製整段回答
+                IconButton(
+                    onClick = {
+                        clipboard.setText(AnnotatedString(
+                            (data.answer ?: data.message ?: "")
+                                .display(simplified)))
+                    },
+                    modifier = Modifier.size(28.dp),
+                ) {
+                    Icon(Icons.Filled.ContentCopy,
+                        contentDescription = "复制回答",
+                        modifier = Modifier.size(16.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
 
-            // 結論
-            Text(
-                (data.answer ?: data.message ?: "").display(simplified),
-                style = MaterialTheme.typography.bodyMedium,
-            )
+            // 結論（SelectionContainer：可長按自由選擇複製）
+            SelectionContainer {
+                Text(
+                    (data.answer ?: data.message ?: "").display(simplified),
+                    style = MaterialTheme.typography.bodyMedium,
+                )
+            }
             data.clarification?.let {
                 Text("（智能体请求补充信息，请提供更完整的四诊描述）",
                     style = MaterialTheme.typography.labelSmall,
@@ -781,12 +909,14 @@ private fun EvidenceCard(
                 }
             }
             if (ev.excerpt.isNotBlank()) {
-                Text(
-                    "「${ev.excerpt.display(simplified)}」",
-                    style = MaterialTheme.typography.bodySmall,
-                    fontStyle = FontStyle.Italic,
-                    maxLines = 3,
-                )
+                SelectionContainer {
+                    Text(
+                        "「${ev.excerpt.display(simplified)}」",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontStyle = FontStyle.Italic,
+                        maxLines = 3,
+                    )
+                }
             } else {
                 Text(stringResource(R.string.agent_evidence_remote_only),
                     style = MaterialTheme.typography.labelSmall,
