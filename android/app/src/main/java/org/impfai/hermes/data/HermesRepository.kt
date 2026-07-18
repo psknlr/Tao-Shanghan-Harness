@@ -319,19 +319,27 @@ class HermesRepository(
             note("检索词：" + queries.joinToString("、"))
         }
 
-        // —— 全庫並行取證（條文層 + 古籍層，按證據等級 top-k）——
-        step("全库取证：伤寒论条文 BM25 + 803 部古籍（稀字剪枝·并行·早停）…")
+        // —— 全庫並行取證（條文層 + 古籍層；詞項抽取 + 書名直配 +
+        //     分層配額合併，總池 50 條）——
+        step("全库取证：伤寒论条文 BM25 + 803 部古籍（切词·剪枝·并行·早停）…")
         val t0 = System.currentTimeMillis()
         val pool = LinkedHashMap<String, UnifiedRetriever.UnifiedHit>()
-        for (q in queries) {
-            unifiedSearch(q, topK = 8).forEach { pool.putIfAbsent(it.ref, it) }
+        fun poolTiered(): List<UnifiedRetriever.UnifiedHit> {
+            val all = pool.values.toList()
+            return UnifiedRetriever.mergeTiered(
+                all.filter { it.sourceType == "clause" },
+                all.filter { it.sourceType == "library" },
+                UnifiedRetriever.TOTAL_POOL)
         }
-        var evidence = pool.values
-            .sortedByDescending { it.grade.stars }.take(10)
+        for (q in queries) {
+            unifiedSearch(q, topK = UnifiedRetriever.TOTAL_POOL)
+                .forEach { pool.putIfAbsent(it.ref, it) }
+        }
+        var evidence = poolTiered()
         note("检得 ${evidence.size} 条（条文 " +
             "${evidence.count { it.sourceType == "clause" }} + 古籍 " +
             "${evidence.count { it.sourceType == "library" }}）· " +
-            "用时 ${System.currentTimeMillis() - t0}ms · 按证据等级排序")
+            "用时 ${System.currentTimeMillis() - t0}ms · 按证据层级配额合并")
 
         // —— Skill 方法指引（深度思考）——
         var skillBlock = ""
@@ -380,21 +388,25 @@ class HermesRepository(
             } else {
                 note("补充检索：" + extra.joinToString("、"))
                 for (q in extra) {
-                    unifiedSearch(q, topK = 6).forEach {
-                        pool.putIfAbsent(it.ref, it)
-                    }
+                    unifiedSearch(q, topK = UnifiedRetriever.TOTAL_POOL)
+                        .forEach { pool.putIfAbsent(it.ref, it) }
                 }
-                evidence = pool.values
-                    .sortedByDescending { it.grade.stars }.take(12)
-                note("证据扩充至 ${evidence.size} 条")
+                evidence = poolTiered()
+                note("证据扩充至 ${evidence.size} 条（分层配额）")
             }
         }
 
         // —— 流式終答 ——
+        // 提示詞證據塊按證據層級分組（高層在前，模型優先依據）
         val evidenceBlock = if (evidence.isEmpty()) "（全库检索无命中）"
-        else evidence.joinToString("\n") {
-            "[${it.ref}]（${it.grade.label}） ${it.text}"
-        }
+        else evidence.groupBy { it.grade }.entries
+            .sortedByDescending { it.key.stars }
+            .joinToString("\n") { (grade, hits) ->
+                "【证据·${grade.label}（${grade.stars}★）】\n" +
+                    hits.joinToString("\n") {
+                        "[${it.ref}] ${it.text.take(160)}"
+                    }
+            }
         step("调用 $model 流式生成（仅限所给证据作答）…")
         val answer = DirectLlm.completeStream(
             provider = s.llmProvider, apiKey = s.llmApiKey,

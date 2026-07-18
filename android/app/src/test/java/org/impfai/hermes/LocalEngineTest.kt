@@ -105,8 +105,10 @@ class LocalEngineTest {
         val t0 = System.nanoTime()
         repeat(20) { store.search("往來寒熱 胸脅苦滿", topK = 8) }
         val avgMs = (System.nanoTime() - t0) / 20 / 1_000_000.0
-        assertTrue("平均檢索耗時 ${avgMs}ms 應 < 50ms（JVM 下限遠高於真機）",
-            avgMs < 50)
+        // 守衛目標是抓「數量級」回歸（v1.2 曾退化到秒級）；共享 CI 容器
+        // 上 50ms 閾值受鄰居負載抖動（實測 40~70ms 波動），放寬到 150ms
+        assertTrue("平均檢索耗時 ${avgMs}ms 應 < 150ms（JVM 下限遠高於真機）",
+            avgMs < 150)
     }
 
     @Test

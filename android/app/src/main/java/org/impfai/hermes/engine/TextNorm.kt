@@ -97,6 +97,12 @@ object TextNorm {
 
     fun normalizeQuery(text: String): String = foldVariants(s2t(text.trim()))
 
+    /** 檢索規範化空間 v2（v1.12）：異體歸一 + **全量**繁→簡折算
+     *（S2TFull 4105 對，OpenCC 派生）。領域 s2t 小表覆蓋不到的常用字
+     *（如 鳴/聾）在這裡統一——全庫檢索的查詢與文本兩側同走此函數。
+     *  一字對一字，位置偏移不變。 */
+    fun searchCanon(text: String): String = S2TFull.t2s(foldVariants(text))
+
     /** 規範比對空間（v1.4+）：簡體+異體歸一+去空白——簡繁任意輸入的
      *  逐字包含匹配統一走這裡（檢索框/溯源/定位開卷共用）。 */
     fun canon(text: String): String =

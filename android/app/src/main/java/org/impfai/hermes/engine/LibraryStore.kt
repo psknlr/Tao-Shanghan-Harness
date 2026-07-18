@@ -112,8 +112,18 @@ class LibraryStore(private val context: Context) {
                     json.decodeFromStream<JsonObject>(it)
                 }
                 val chars = root["chars"] as? JsonObject ?: JsonObject(emptyMap())
-                charIndex = chars.mapValues { (_, v) ->
-                    v.jsonArray.mapNotNull { it.jsonPrimitive.intOrNull }
+                // 鍵折算到檢索規範化空間（全量繁→簡）並合併 posting——
+                // 索引建於繁體字，簡體查詢字必須能命中（v1.12「耳鳴」修復）
+                val merged = HashMap<String, MutableList<Int>>()
+                for ((k, v) in chars) {
+                    val key = TextNorm.searchCanon(k)
+                    val posting = v.jsonArray.mapNotNull {
+                        it.jsonPrimitive.intOrNull
+                    }
+                    merged.getOrPut(key) { ArrayList() }.addAll(posting)
+                }
+                charIndex = merged.mapValues { (_, v) ->
+                    v.distinct().sorted()
                 }
             }
         }
@@ -280,7 +290,7 @@ class LibraryStore(private val context: Context) {
             : List<GrepHit> = withContext(Dispatchers.IO) {
         if (!ensureCatalog()) return@withContext emptyList()
         ensureCharIndex()
-        val q = TextNorm.foldVariants(TextNorm.s2t(query.trim()))
+        val q = TextNorm.searchCanon(query.trim())
         if (q.isBlank()) return@withContext emptyList()
         val units = catalog!!.units
         val cjk = q.filter { it.code in 0x3400..0x9FFF }.map(Char::toString)
@@ -318,7 +328,7 @@ class LibraryStore(private val context: Context) {
                                     currentSection = it.groupValues[2]
                                     return@let
                                 }
-                                val folded = TextNorm.foldVariants(line)
+                                val folded = TextNorm.searchCanon(line)
                                 val pos = folded.indexOf(q)
                                 if (pos >= 0) {
                                     val from = (pos - 30).coerceAtLeast(0)
@@ -339,10 +349,12 @@ class LibraryStore(private val context: Context) {
 
     // —— 智能體全庫取證加速（v1.10/v1.11）——
 
-    /** 啟動預熱：編目 + 字符倒排索引（首次智能體檢索不再付索引解析成本）。 */
+    /** 啟動預熱：僅編目（書架/檢索 UI 必需）。字符倒排索引改為首查
+     *  惰性加載——每個 Application 實例預熱重解析 10k 鍵索引會在
+     *  Robolectric（每測試方法新建 App）下泄漏成堆後台任務拖垮同 JVM
+     *  性能守衛；真機首查一次性 ~100ms，步驟用時如實顯示。 */
     suspend fun prewarmSearch() {
-        if (!ensureCatalog()) return
-        ensureCharIndex()
+        ensureCatalog()
     }
 
     /** 折疊全文緩存單元：raw 行（摘錄展示）+ folded 行（匹配）+ 行級章節。 */
@@ -393,7 +405,7 @@ class LibraryStore(private val context: Context) {
                                 return@let
                             }
                             raw.add(line)
-                            folded.add(TextNorm.foldVariants(line))
+                            folded.add(TextNorm.searchCanon(line))
                             sections.add(currentSection)
                             chars += line.length * 2L
                         }
@@ -435,7 +447,7 @@ class LibraryStore(private val context: Context) {
     ): List<GrepHit> = withContext(Dispatchers.IO) {
         if (!ensureCatalog()) return@withContext emptyList()
         ensureCharIndex()
-        val q = TextNorm.foldVariants(TextNorm.s2t(query.trim()))
+        val q = TextNorm.searchCanon(query.trim())
         if (q.isBlank()) return@withContext emptyList()
         synchronized(grepCache) { grepCache[q] }?.let { return@withContext it }
         val units = catalog!!.units

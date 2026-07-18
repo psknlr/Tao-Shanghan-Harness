@@ -385,7 +385,7 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
         // 服務端通道沿用條文 id 回查
         val cards = if (data.directEvidence.isNotEmpty()) {
             container.localStore.ensureLoaded()
-            data.directEvidence.take(10).map { d ->
+            data.directEvidence.take(50).map { d ->
                 if (d.sourceType == "clause") {
                     val c = container.localStore.byId(d.clauseId)
                     EvidenceCardData(
