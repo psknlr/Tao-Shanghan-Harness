@@ -3,8 +3,10 @@ package org.impfai.hermes.ui.agent
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
@@ -32,11 +34,13 @@ import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Warning
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ModalBottomSheet
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -131,6 +135,8 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
         val mode: String = "",
         /** 推理深度 max_steps（僅服務端通道生效）。 */
         val depth: Int = AppSettings.DEFAULT_AGENT_DEPTH,
+        /** 直連通道深度思考（多輪檢索+Skill 指引+評估補檢）。 */
+        val deepThink: Boolean = false,
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -142,8 +148,14 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
             _state.value = _state.value.copy(
                 simplified = s.simplifiedDisplay, role = s.requestedRole,
                 directReady = s.llmApiKey.isNotBlank(),
-                mode = s.agentMode, depth = s.agentDepth)
+                mode = s.agentMode, depth = s.agentDepth,
+                deepThink = s.deepThink)
         }
+    }
+
+    fun setDeepThink(on: Boolean) {
+        _state.value = _state.value.copy(deepThink = on)
+        viewModelScope.launch { container.settings.setDeepThink(on) }
     }
 
     fun setMode(mode: String) {
@@ -372,7 +384,9 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
                 var partial = ""
                 _state.value = _state.value.copy(
                     items = _state.value.items + ChatItem.Streaming(steps, ""))
-                val result = container.repo.directAgentStream(q) { ev ->
+                val deep = _state.value.deepThink
+                val result = container.repo.directAgentStream(
+                    q, deepThink = deep) { ev ->
                     when (ev) {
                         is org.impfai.hermes.data.HermesRepository
                             .StreamEvent.Step -> steps = steps + ev.label
@@ -418,7 +432,8 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
     }
 }
 
-@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalLayoutApi::class, ExperimentalMaterial3Api::class,
+    ExperimentalFoundationApi::class)
 @Composable
 fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
     val container = rememberContainer()
@@ -427,6 +442,10 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
     // 條文頁「AI 解讀」帶入的預填問題；prefill 變化（換條文）時重置輸入
     var input by remember(prefill) { mutableStateOf(prefill) }
     var showHistory by remember { mutableStateOf(false) }
+    // 消息操作菜單（點擊/長按問題氣泡）與「選擇文本」彈窗
+    var msgMenuFor by remember { mutableStateOf<String?>(null) }
+    var selectTextFor by remember { mutableStateOf<String?>(null) }
+    val screenClipboard = LocalClipboardManager.current
     val listState = rememberLazyListState()
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -532,6 +551,25 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                                 color = MaterialTheme.colorScheme.error,
                             )
                         }
+                        if (state.source == "direct") {
+                            FilterChip(
+                                selected = state.deepThink,
+                                enabled = !state.loading,
+                                onClick = { vm.setDeepThink(!state.deepThink) },
+                                label = { Text(
+                                    if (state.deepThink) "🧠 深度思考 · 开"
+                                    else "🧠 深度思考",
+                                    style = MaterialTheme.typography.labelMedium) },
+                            )
+                            if (state.deepThink) {
+                                Text(
+                                    "深研管线：检索规划 → 全库多轮取证 → " +
+                                        "Skill 方法指引 → 证据评估补检 → 成稿",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            }
+                        }
                     }
                     // 服務端通道：會話模式（角色面）+ 推理深度（max_steps）
                     // ——只映射服務端真實存在的檔位（評審建議十）
@@ -579,21 +617,23 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                         Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.End,
                     ) {
-                        // SelectionContainer：問題文本可長按自由選擇複製
-                        SelectionContainer {
-                            Text(
-                                item.text,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer,
-                                modifier = Modifier
-                                    .widthIn(max = 300.dp)
-                                    .background(
-                                        MaterialTheme.colorScheme.primaryContainer,
-                                        RoundedCornerShape(14.dp),
-                                    )
-                                    .padding(horizontal = 12.dp, vertical = 8.dp),
-                            )
-                        }
+                        // 點擊/長按問題氣泡 → 操作菜單（複製/選擇文本/編輯消息）
+                        Text(
+                            item.text,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onPrimaryContainer,
+                            modifier = Modifier
+                                .widthIn(max = 300.dp)
+                                .background(
+                                    MaterialTheme.colorScheme.primaryContainer,
+                                    RoundedCornerShape(14.dp),
+                                )
+                                .combinedClickable(
+                                    onClick = { msgMenuFor = item.text },
+                                    onLongClick = { msgMenuFor = item.text },
+                                )
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                        )
                     }
                     is ChatItem.Bot -> BotCard(item, state.simplified, onOpenClause)
                     is ChatItem.Streaming -> Card {
@@ -672,6 +712,49 @@ fun AgentScreen(onOpenClause: (String) -> Unit, prefill: String = "") {
                 Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "发送")
             }
         }
+    }
+
+    // —— 消息操作菜單（複製 / 選擇文本 / 編輯消息）——
+    msgMenuFor?.let { txt ->
+        AlertDialog(
+            onDismissRequest = { msgMenuFor = null },
+            title = { Text("消息操作") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text(txt, maxLines = 3,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    HorizontalDivider(Modifier.padding(vertical = 6.dp))
+                    TextButton(onClick = {
+                        screenClipboard.setText(AnnotatedString(txt))
+                        Toast.makeText(context, "已复制",
+                            Toast.LENGTH_SHORT).show()
+                        msgMenuFor = null
+                    }, modifier = Modifier.fillMaxWidth()) { Text("📋 复制") }
+                    TextButton(onClick = {
+                        selectTextFor = txt; msgMenuFor = null
+                    }, modifier = Modifier.fillMaxWidth()) { Text("🔍 选择文本") }
+                    TextButton(onClick = {
+                        input = txt; msgMenuFor = null
+                    }, modifier = Modifier.fillMaxWidth()) { Text("✏️ 编辑消息") }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { msgMenuFor = null }) { Text("取消") }
+            },
+        )
+    }
+
+    // —— 選擇文本（系統選擇柄自由選詞）——
+    selectTextFor?.let { txt ->
+        AlertDialog(
+            onDismissRequest = { selectTextFor = null },
+            title = { Text("选择文本") },
+            text = { SelectionContainer { Text(txt) } },
+            confirmButton = {
+                TextButton(onClick = { selectTextFor = null }) { Text("完成") }
+            },
+        )
     }
 
     // —— 歷史會話面板（本機持久化：殺進程/換頁不丟）——

@@ -31,7 +31,8 @@ class AppContainer(app: Application) {
     val apiFactory = ApiClientFactory()
     val auditLog = AuditLog(File(app.filesDir, "audit"))
     val chatHistory = ChatHistoryStore(File(app.filesDir, "chats"))
-    val repo = HermesRepository(settings, localStore, apiFactory, auditLog)
+    val repo = HermesRepository(settings, localStore, apiFactory, auditLog,
+        libraryStore, skillStore)
     val appScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 }
 

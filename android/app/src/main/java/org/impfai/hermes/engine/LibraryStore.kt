@@ -1,7 +1,12 @@
 package org.impfai.hermes.engine
 
 import android.content.Context
+import java.util.Collections
+import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
@@ -330,5 +335,111 @@ class LibraryStore(private val context: Context) {
         }
         onProgress(candidates.size, candidates.size)
         hits
+    }
+
+    // —— 智能體全庫取證加速（v1.10）——
+
+    /** 近期查詢 LRU 緩存（深度思考多輪補檢時同詞複用，命中即毫秒返回）。 */
+    private val grepCache = object : LinkedHashMap<String, List<GrepHit>>(
+        16, 0.75f, true) {
+        override fun removeEldestEntry(
+            eldest: MutableMap.MutableEntry<String, List<GrepHit>>?): Boolean =
+            size > 16
+    }
+
+    /**
+     * 並行全庫檢索（智能體取證用）：稀字剪枝 → 候選書並行分片掃描 →
+     * 每書至多 [perBookLimit] 條 → 全局湊足 [limit] 即早停 →
+     * [budgetMs] 硬預算兜底（掃描中的書收尾後停）。
+     * 與 [grep]（界面用，進度回調+順序穩定）互補，不替代。
+     */
+    suspend fun grepFast(
+        query: String,
+        limit: Int = 12,
+        perBookLimit: Int = 2,
+        maxCandidates: Int = 64,
+        budgetMs: Long = 2_000,
+    ): List<GrepHit> = withContext(Dispatchers.IO) {
+        if (!ensureCatalog()) return@withContext emptyList()
+        ensureCharIndex()
+        val q = TextNorm.foldVariants(TextNorm.s2t(query.trim()))
+        if (q.isBlank()) return@withContext emptyList()
+        synchronized(grepCache) { grepCache[q] }?.let { return@withContext it }
+        val units = catalog!!.units
+        val cjk = q.filter { it.code in 0x3400..0x9FFF }.map(Char::toString)
+        val postings = cjk.mapNotNull { ch -> charIndex[ch]?.let { ch to it } }
+            .sortedBy { it.second.size }
+            .take(3)
+        val candidates: List<Int> = (if (postings.isEmpty())
+            units.indices.toList()
+        else postings.map { it.second.toSet() }
+            .reduce { a, b -> a intersect b }.sorted())
+            .take(maxCandidates)
+        val found = Collections.synchronizedList(ArrayList<GrepHit>())
+        val count = AtomicInteger(0)
+        val deadline = System.currentTimeMillis() + budgetMs
+        val workers = 8
+        coroutineScope {
+            candidates.chunked(
+                ((candidates.size + workers - 1) / workers).coerceAtLeast(1)
+            ).map { shard ->
+                async(Dispatchers.IO) {
+                    for (idx in shard) {
+                        if (count.get() >= limit ||
+                            System.currentTimeMillis() > deadline) break
+                        val u = units[idx]
+                        var inBook = 0
+                        var currentSection = ""
+                        for (name in u.files) {
+                            if (inBook >= perBookLimit ||
+                                count.get() >= limit) break
+                            try {
+                                context.assets
+                                    .open("library/books/${u.id}/$name")
+                                    .bufferedReader(Charsets.UTF_8)
+                                    .useLines { lines ->
+                                        var inMeta = false
+                                        for (raw in lines) {
+                                            if (inBook >= perBookLimit ||
+                                                count.get() >= limit) break
+                                            val line = raw.trim()
+                                            if (line == "<book>") {
+                                                inMeta = true; continue
+                                            }
+                                            if (line == "</book>") {
+                                                inMeta = false; continue
+                                            }
+                                            if (inMeta) continue
+                                            heading.matchEntire(line)?.let {
+                                                currentSection =
+                                                    it.groupValues[2]
+                                                return@let
+                                            }
+                                            val folded =
+                                                TextNorm.foldVariants(line)
+                                            val pos = folded.indexOf(q)
+                                            if (pos >= 0) {
+                                                val from = (pos - 30)
+                                                    .coerceAtLeast(0)
+                                                val to = (pos + q.length + 50)
+                                                    .coerceAtMost(line.length)
+                                                found.add(GrepHit(u,
+                                                    currentSection,
+                                                    line.substring(from, to)))
+                                                inBook++
+                                                count.incrementAndGet()
+                                            }
+                                        }
+                                    }
+                            } catch (_: Exception) {
+                            }
+                        }
+                    }
+                }
+            }.awaitAll()
+        }
+        val out = found.take(limit)
+        synchronized(grepCache) { grepCache[q] = out }
+        out
     }
 }

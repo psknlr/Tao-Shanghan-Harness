@@ -21,8 +21,13 @@ import org.impfai.hermes.core.network.ApiResult
 import org.impfai.hermes.core.network.HermesApi
 import org.impfai.hermes.core.network.safeCall
 import org.impfai.hermes.core.settings.SettingsRepository
+import org.impfai.hermes.core.model.evidenceGradeForLayer
+import org.impfai.hermes.engine.LibraryStore
 import org.impfai.hermes.engine.LocalClauseStore
 import org.impfai.hermes.engine.LocalFormulaMatcher
+import org.impfai.hermes.engine.SkillStore
+import org.impfai.hermes.engine.TextNorm
+import org.impfai.hermes.engine.UnifiedRetriever
 
 /** UI 層統一結果：數據 + 來源標記 + 可選提示。 */
 sealed interface RepoResult<out T> {
@@ -68,7 +73,28 @@ class HermesRepository(
      *  服務端通道與 VIP 直連通道都記——直連模式沒有服務端審計，
      *  本機軌跡是唯一的證據記錄。 */
     private val auditLog: AuditLog? = null,
+    /** 全庫古籍檢索（v1.10 統一取證）：null = 僅傷寒論條文層（測試用）。 */
+    private val libraryStore: LibraryStore? = null,
+    /** Skill 庫（v1.10 深度思考方法指引）：null = 跳過。 */
+    private val skillStore: SkillStore? = null,
 ) {
+
+    private val retriever: UnifiedRetriever? by lazy {
+        libraryStore?.let { UnifiedRetriever(localStore, it) }
+    }
+
+    /** 統一取證：全庫可用時兩路並行，否則退傷寒論條文層。 */
+    private suspend fun unifiedSearch(
+        query: String, topK: Int,
+    ): List<UnifiedRetriever.UnifiedHit> =
+        retriever?.search(query, topK)
+            ?: localStore.search(query, topK = topK).map {
+                UnifiedRetriever.UnifiedHit(
+                    sourceType = "clause", ref = it.clauseId, text = it.text,
+                    grade = evidenceGradeForLayer(it.layer),
+                    clauseId = it.clauseId, book = "傷寒論",
+                    section = it.chapter)
+            }
 
     private suspend fun api(): Pair<HermesApi, String?> {
         val s = settingsRepo.current()
@@ -227,15 +253,18 @@ class HermesRepository(
     private val reClauseId = Regex("SHL_SONGBEN_(?:AUX_)?\\d{4}")
 
     private val directSystemPrompt = """
-        你是《伤寒论》文献研究助手（研发者：医哲未来人工智能研究院 IMPF-AI）。
+        你是中医古籍文献研究助手（研发者：医哲未来人工智能研究院 IMPF-AI）。
         规则：
-        1. 只能依据下方【证据条文】作答；引用条文时必须使用其方括号内的
-           条文 ID（如 [SHL_SONGBEN_0012]），不得编造 ID 或凭记忆引用。
-        2. 证据不足以回答时，明确说明"现有证据不足"，不要臆测。
-        3. 输出结构：主要结论 → 证据条文（逐条 ID+要点）→ 局限与不确定性。
-        4. 这是古籍文献研究，不是诊疗：不得给出用药剂量建议、不得下诊断，
+        1. 只能依据下方【证据】作答：伤寒论条文引用其方括号内条文 ID
+           （如 [SHL_SONGBEN_0012]）；其他古籍引用其方括号内书名章节
+           （如 [《千金要方·卷九》]），不得编造出处或凭记忆引用。
+        2. 证据按等级标注（经典原文 > 历代要籍 > 论说文献 > 医案纪实），
+           结论优先依据高等级证据；等级冲突时说明分歧。
+        3. 证据不足以回答时，明确说明"现有证据不足"，不要臆测。
+        4. 输出结构：主要结论 → 证据依据（逐条出处+要点）→ 局限与不确定性。
+        5. 这是古籍文献研究，不是诊疗：不得给出用药剂量建议、不得下诊断，
            涉及现实病情时提醒用户咨询执业中医师。
-        5. 使用与提问相同的语言（简体/繁体）回答，保持简洁。
+        6. 使用与提问相同的语言（简体/繁体）回答，保持简洁。
     """.trimIndent()
 
     /** 直連流式事件：步驟時間線 + 增量文本（智能體頁可視化過程）。 */
@@ -245,12 +274,16 @@ class HermesRepository(
     }
 
     /**
-     * VIP 直連流式管線：①本地 BM25 取證（步驟含命中條文號）
-     * ② 模型流式生成（增量回調）③ 本地 CitationGuard 核驗。
-     * 返回帶核驗報告的最終 AgentData。
+     * VIP 直連流式管線（v1.10 全庫取證 + 深度思考）：
+     * 標準：全庫並行取證（條文 BM25 + 803 部古籍剪枝並行）→ 流式生成
+     * → 本地 CitationGuard 核驗（條文 ID + 書名出處雙軌）。
+     * 深度思考（[deepThink]）另加：檢索規劃（模型擬定補充檢索詞）→
+     * Skill 方法指引 → 證據評估補檢一輪 → 再成稿——多次檢索/調用
+     * 工具與 Skill 後作答。
      */
     suspend fun directAgentStream(
         question: String,
+        deepThink: Boolean = false,
         onEvent: (StreamEvent) -> Unit,
     ): RepoResult<AgentData> {
         val s = settingsRepo.current()
@@ -259,23 +292,116 @@ class HermesRepository(
                 "未配置模型 API Key，请在“我的 → 直连大模型”中设置")
         }
         localStore.ensureLoaded()
-        onEvent(StreamEvent.Step("① 本地检索证据条文（BM25 + 简繁归一）…"))
-        val hits = localStore.search(question, topK = 6)
-        val evidenceIds = hits.map { it.clauseId }.toSet()
-        onEvent(StreamEvent.Step(
-            if (hits.isEmpty()) "① 本地检索：无命中（模型将被要求声明证据不足）"
-            else "① 检得 ${hits.size} 条：" + hits.joinToString("、") {
-                it.clauseNumber?.let { n -> "第${n}条" } ?: it.clauseId
-            }))
-        val evidenceBlock = if (hits.isEmpty()) "（本地检索无命中）"
-        else hits.joinToString("\n") { "[${it.clauseId}] ${it.text}" }
         val model = s.llmModel.ifBlank { DirectLlm.defaultModel(s.llmProvider) }
-        onEvent(StreamEvent.Step("② 调用 $model 流式生成（仅限所给证据作答）…"))
+        var stepNo = 0
+        fun step(label: String) {
+            stepNo += 1
+            onEvent(StreamEvent.Step("$stepNo. $label"))
+        }
+        fun note(label: String) = onEvent(StreamEvent.Step("　$label"))
+
+        // —— 檢索規劃（深度思考）——
+        val queries = LinkedHashSet<String>().apply { add(question.take(60)) }
+        if (deepThink) {
+            step("深度思考 · 检索规划（模型拟定补充检索词）…")
+            DirectLlm.complete(
+                provider = s.llmProvider, apiKey = s.llmApiKey,
+                baseUrl = s.llmBaseUrl, model = s.llmModel,
+                system = "你是中医古籍检索规划助手。只输出检索词本身。",
+                user = "问题：$question\n给出至多 3 个适合古籍全文检索的" +
+                    "关键词（每行一个，2~8 个汉字，不要编号不要解释）。",
+                maxTokens = 200,
+            ).getOrNull()?.lines()
+                ?.map { it.trim().trim('、', '，', '。', '.', ',', '-', '*') }
+                ?.filter { it.length in 2..12 && it.any { c ->
+                    c.code in 0x3400..0x9FFF } }
+                ?.take(3)?.forEach { queries.add(it) }
+            note("检索词：" + queries.joinToString("、"))
+        }
+
+        // —— 全庫並行取證（條文層 + 古籍層，按證據等級 top-k）——
+        step("全库取证：伤寒论条文 BM25 + 803 部古籍（稀字剪枝·并行·早停）…")
+        val t0 = System.currentTimeMillis()
+        val pool = LinkedHashMap<String, UnifiedRetriever.UnifiedHit>()
+        for (q in queries) {
+            unifiedSearch(q, topK = 8).forEach { pool.putIfAbsent(it.ref, it) }
+        }
+        var evidence = pool.values
+            .sortedByDescending { it.grade.stars }.take(10)
+        note("检得 ${evidence.size} 条（条文 " +
+            "${evidence.count { it.sourceType == "clause" }} + 古籍 " +
+            "${evidence.count { it.sourceType == "library" }}）· " +
+            "用时 ${System.currentTimeMillis() - t0}ms · 按证据等级排序")
+
+        // —— Skill 方法指引（深度思考）——
+        var skillBlock = ""
+        if (deepThink && skillStore != null) {
+            step("匹配领域 Skill（139 个内置技能）…")
+            val skills = skillStore.search(question, topK = 2)
+            if (skills.isEmpty()) {
+                note("无强相关 Skill，跳过")
+            } else {
+                val names = ArrayList<String>()
+                skillBlock = buildString {
+                    append("【方法指引（领域 Skill，仅指导分析框架）】\n")
+                    for (sk in skills) {
+                        val title = skillStore.titleOf(sk)
+                        names.add(title)
+                        append("— ").append(title).append("：\n")
+                        append(skillStore.read(sk).markdown.take(600))
+                        append("\n")
+                    }
+                }
+                note("命中 Skill：" + names.joinToString("、"))
+            }
+        }
+
+        // —— 證據評估 · 補充檢索一輪（深度思考）——
+        if (deepThink) {
+            step("证据评估：判断是否需要补充检索…")
+            val summary = evidence.joinToString("\n") {
+                "[${it.ref}] " + it.text.take(40)
+            }
+            val verdict = DirectLlm.complete(
+                provider = s.llmProvider, apiKey = s.llmApiKey,
+                baseUrl = s.llmBaseUrl, model = s.llmModel,
+                system = "你是证据评估助手。只输出结论行。",
+                user = "问题：$question\n已检得证据：\n$summary\n" +
+                    "若证据不足以专业作答，输出一行「补充检索: 关键词」" +
+                    "（至多 2 个，顿号分隔）；若已充分，输出「证据充分」。",
+                maxTokens = 100,
+            ).getOrNull() ?: ""
+            val extra = Regex("补充检索[:：]\\s*(.+)").find(verdict)
+                ?.groupValues?.get(1)
+                ?.split('、', '，', ',')?.map { it.trim() }
+                ?.filter { it.length in 2..12 }?.take(2).orEmpty()
+            if (extra.isEmpty()) {
+                note("证据充分，进入成稿")
+            } else {
+                note("补充检索：" + extra.joinToString("、"))
+                for (q in extra) {
+                    unifiedSearch(q, topK = 6).forEach {
+                        pool.putIfAbsent(it.ref, it)
+                    }
+                }
+                evidence = pool.values
+                    .sortedByDescending { it.grade.stars }.take(12)
+                note("证据扩充至 ${evidence.size} 条")
+            }
+        }
+
+        // —— 流式終答 ——
+        val evidenceBlock = if (evidence.isEmpty()) "（全库检索无命中）"
+        else evidence.joinToString("\n") {
+            "[${it.ref}]（${it.grade.label}） ${it.text}"
+        }
+        step("调用 $model 流式生成（仅限所给证据作答）…")
         val answer = DirectLlm.completeStream(
             provider = s.llmProvider, apiKey = s.llmApiKey,
             baseUrl = s.llmBaseUrl, model = s.llmModel,
             system = directSystemPrompt,
-            user = "【证据条文】\n$evidenceBlock\n\n【问题】\n$question",
+            user = (if (skillBlock.isBlank()) "" else skillBlock + "\n") +
+                "【证据】\n$evidenceBlock\n\n【问题】\n$question",
             maxTokens = s.llmMaxTokens,
             onDelta = { onEvent(StreamEvent.Delta(it)) },
         ).getOrElse { e ->
@@ -283,12 +409,77 @@ class HermesRepository(
             auditAgent("direct", question, "byok", err)
             return err
         }
-        onEvent(StreamEvent.Step("③ 本地 CitationGuard 核验引用…"))
+        step("本地 CitationGuard 核验引用（条文 ID + 书名出处双轨）…")
         val out = RepoResult.Data(
-            buildDirectAgentData(question, answer, hits, evidenceIds, model),
+            buildUnifiedAgentData(question, answer, evidence, model, deepThink),
             ResultOrigin.SERVER)
         auditAgent("direct", question, "byok", out)
         return out
+    }
+
+    /** 統一取證版回答構建：條文 ID 與《書名》出處雙軌核驗。 */
+    private fun buildUnifiedAgentData(
+        question: String,
+        answer: String,
+        evidence: List<UnifiedRetriever.UnifiedHit>,
+        model: String,
+        deepThink: Boolean,
+    ): AgentData {
+        val clauseIds = evidence.filter { it.sourceType == "clause" }
+            .map { it.clauseId }.toSet()
+        fun fold(t: String) = TextNorm.foldVariants(TextNorm.s2t(t))
+        val evidenceBooks = evidence.filter { it.sourceType == "library" }
+            .map { fold(it.book) }.toSet()
+        val citedIds = reClauseId.findAll(answer)
+            .map { it.value }.distinct().toList()
+        val citedBooks = Regex("《([^》·]{1,25})(?:·[^》]{1,30})?》")
+            .findAll(answer).map { it.groupValues[1] }.distinct().toList()
+        val verified = ArrayList<String>()
+        val outside = ArrayList<String>()
+        val unsupported = ArrayList<String>()
+        for (id in citedIds) {
+            when {
+                id in clauseIds -> verified.add(id)
+                localStore.byId(id) != null -> outside.add(id)
+                else -> unsupported.add(id)
+            }
+        }
+        for (book in citedBooks) {
+            when {
+                fold(book) in evidenceBooks || fold(book) == fold("傷寒論") ->
+                    verified.add("《$book》")
+                else -> outside.add("《$book》")
+            }
+        }
+        val cited = citedIds + citedBooks.map { "《$it》" }
+        val report = CitationReport(
+            cited = cited, verified = verified, unsupported = unsupported,
+            outsideEvidence = outside,
+            hasAnyCitation = cited.isNotEmpty(),
+            ok = cited.isNotEmpty() && unsupported.isEmpty() &&
+                outside.isEmpty(),
+        )
+        val tools = ArrayList<String>()
+        tools.add("unified_evidence_search")
+        tools.add("local_bm25_rag")
+        if (libraryStore != null) tools.add("library_grep_parallel")
+        if (deepThink) {
+            tools.add("retrieval_planning")
+            tools.add("evidence_review")
+            if (skillStore != null) tools.add("skill_rag")
+        }
+        tools.add("local_citation_guard")
+        return AgentData(
+            question = question, answer = answer,
+            backend = (if (deepThink) "直连·深研·" else "直连·") + model,
+            toolsUsed = tools,
+            evidenceClauseIds = evidence
+                .filter { it.sourceType == "clause" }.map { it.clauseId },
+            citationReport = report,
+            safetyNotice = "直连模式：回答由第三方大模型生成，引用仅经本地核验" +
+                "（弱于服务端全链路证据闸门）；内容供文献学习参考，" +
+                "不构成诊断或治疗建议。",
+        )
     }
 
     private fun buildDirectAgentData(

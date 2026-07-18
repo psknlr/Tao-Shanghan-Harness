@@ -74,6 +74,57 @@ class SkillStore(private val context: Context) {
         out
     }
 
+    // —— 智能體 Skill 檢索（v1.10 深度思考）——
+
+    @Volatile private var titleCache: Map<String, String>? = null
+
+    /** 各 Skill 的中文標題行（SKILL.md 首個非空行），首查構建緩存。 */
+    private suspend fun titles(): Map<String, String> {
+        titleCache?.let { return it }
+        return withContext(Dispatchers.IO) {
+            val map = HashMap<String, String>()
+            for (e in list()) {
+                try {
+                    context.assets.open("${e.path}/SKILL.md")
+                        .bufferedReader(Charsets.UTF_8).useLines { lines ->
+                            map[e.path] = lines.firstOrNull { it.isNotBlank() }
+                                ?.removePrefix("#")?.trim()?.take(60) ?: e.name
+                        }
+                } catch (_: Exception) {
+                    map[e.path] = e.name
+                }
+            }
+            map.also { titleCache = it }
+        }
+    }
+
+    /** 按問題檢索相關 Skill：查詢 CJK 字符與標題/類目重疊計分。 */
+    suspend fun search(query: String, topK: Int = 2): List<SkillEntry> {
+        if (!available()) return emptyList()
+        val q = TextNorm.foldVariants(TextNorm.s2t(query))
+            .filter { it.code in 0x3400..0x9FFF }
+        if (q.isBlank()) return emptyList()
+        val ts = titles()
+        return list().map { e ->
+            val hay = TextNorm.foldVariants(TextNorm.s2t(
+                (ts[e.path] ?: "") + e.category + e.name))
+            var score = 0
+            // bigram 重疊為主（單字太泛），bigram 命中加倍
+            for (i in 0 until q.length - 1) {
+                if (hay.contains(q.substring(i, i + 2))) score += 2
+            }
+            q.forEach { ch -> if (hay.contains(ch)) score += 1 }
+            e to score
+        }.filter { it.second >= 4 }
+            .sortedByDescending { it.second }
+            .take(topK)
+            .map { it.first }
+    }
+
+    /** Skill 標題（智能體提示詞展示用）。 */
+    suspend fun titleOf(entry: SkillEntry): String =
+        titles()[entry.path] ?: entry.name
+
     suspend fun read(entry: SkillEntry): SkillDoc = withContext(Dispatchers.IO) {
         val md = try {
             context.assets.open("${entry.path}/SKILL.md")

@@ -49,6 +49,8 @@ data class AppSettings(
     val agentMode: String = "",
     /** 智能體推理深度（max_steps 請求值，服務端裁剪至 1..12）。 */
     val agentDepth: Int = DEFAULT_AGENT_DEPTH,
+    /** 直連通道深度思考：檢索規劃→多輪取證→Skill 指引→評估補檢。 */
+    val deepThink: Boolean = false,
     /** false = 本機 Keystore 不可用，秘密降級明文存儲（設置頁警示）。 */
     val secureTokenStorage: Boolean = true,
 ) {
@@ -100,6 +102,7 @@ class SettingsRepository(
         val LIB_RECENTS = stringPreferencesKey("library_recents")   // "id|id|…"
         val AGENT_MODE = stringPreferencesKey("agent_mode")
         val AGENT_DEPTH = intPreferencesKey("agent_depth")
+        val DEEP_THINK = booleanPreferencesKey("deep_think")
     }
 
     val settings: Flow<AppSettings> = context.dataStore.data.map { p ->
@@ -125,6 +128,7 @@ class SettingsRepository(
                 .takeIf { it in AppSettings.AGENT_MODES } ?: "",
             agentDepth = (p[Keys.AGENT_DEPTH] ?: AppSettings.DEFAULT_AGENT_DEPTH)
                 .coerceIn(1, 12),
+            deepThink = p[Keys.DEEP_THINK] ?: false,
             secureTokenStorage = !secureStore.insecureFallback,
         )
     }
@@ -208,6 +212,10 @@ class SettingsRepository(
 
     suspend fun setAgentDepth(depth: Int) {
         context.dataStore.edit { it[Keys.AGENT_DEPTH] = depth.coerceIn(1, 12) }
+    }
+
+    suspend fun setDeepThink(on: Boolean) {
+        context.dataStore.edit { it[Keys.DEEP_THINK] = on }
     }
 
     suspend fun toggleFavorite(clauseId: String) {
