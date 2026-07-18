@@ -61,6 +61,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
@@ -178,6 +179,7 @@ class ReaderViewModel(
         val simplified: Boolean = true,
         val annotations: List<AnnotationStore.Annotation> = emptyList(),
         val targetPara: Int? = null,     // 定位開卷的目標段（跳頁+閃亮）
+        val resumed: Boolean = false,    // 本次打開恢復了上次閱讀位置
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -215,8 +217,43 @@ class ReaderViewModel(
                     return@launch
                 }
             }
+            // 續讀（v1.9.1）：無顯式章節/定位時恢復上次進度——
+            // 舊版每次點開都從頭讀，進度只存在「最近閱讀」的順序裡
+            if (initialSection.isBlank()) {
+                val prog = container.readingProgress.get(u.id)
+                if (prog != null &&
+                    (prog.section.isNotBlank() || prog.paraIndex > 0)
+                ) {
+                    _state.value = _state.value.copy(resumed = true)
+                    open(prog.section,
+                        target = prog.paraIndex.takeIf { it > 0 })
+                    return@launch
+                }
+            }
             open(initialSection)
         }
+    }
+
+    /** 翻頁即記進度（書·章節·段序）；段序對字號/簡繁重排穩定。 */
+    fun saveProgress(paraIndex: Int) {
+        val u = _state.value.unit ?: return
+        val st = _state.value
+        viewModelScope.launch {
+            container.readingProgress.save(
+                org.impfai.hermes.engine.ReadingProgressStore.Progress(
+                    bookId = u.id,
+                    section = st.section,
+                    paraIndex = paraIndex,
+                    percent = if (st.paras.isEmpty()) 0f
+                    else ((paraIndex + 1).toFloat() / st.paras.size)
+                        .coerceIn(0f, 1f),
+                    updatedAt = System.currentTimeMillis(),
+                ))
+        }
+    }
+
+    fun clearResumed() {
+        _state.value = _state.value.copy(resumed = false)
     }
 
     fun open(section: String, target: Int? = null) {
@@ -350,6 +387,27 @@ fun ReaderScreen(
 
     // 翻頁即取消選中
     LaunchedEffect(pagerState.currentPage) { sel = null }
+
+    // 閱讀進度自動保存：翻頁即記錄，下次打開該書自動續讀
+    var lastSavedPara by remember { mutableStateOf(-1) }
+    LaunchedEffect(pagerState.currentPage, pages.size) {
+        val p = pages.getOrNull(pagerState.currentPage)
+            ?.chunks?.firstOrNull()?.paraIndex ?: return@LaunchedEffect
+        if (p != lastSavedPara) {
+            lastSavedPara = p
+            vm.saveProgress(p)
+        }
+    }
+
+    // 續讀提示（一次性）
+    val toastContext = LocalContext.current
+    LaunchedEffect(state.resumed) {
+        if (state.resumed) {
+            android.widget.Toast.makeText(toastContext,
+                "已恢复上次阅读位置", android.widget.Toast.LENGTH_SHORT).show()
+            vm.clearResumed()
+        }
+    }
 
     // 定位開卷：跳到包含目標段的頁並短暫高亮
     LaunchedEffect(state.targetPara, pages.size) {

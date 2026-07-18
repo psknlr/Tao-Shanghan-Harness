@@ -55,6 +55,7 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import org.impfai.hermes.AppContainer
 import org.impfai.hermes.engine.LibraryStore
+import org.impfai.hermes.engine.ReadingProgressStore
 import org.impfai.hermes.ui.common.NoticeBar
 import org.impfai.hermes.ui.common.display
 import org.impfai.hermes.ui.common.rememberContainer
@@ -82,6 +83,8 @@ class LibraryViewModel(private val container: AppContainer) : ViewModel() {
         val grepRunning: Boolean = false,
         val grepProgress: Float = 0f,
         val grepSearched: Boolean = false,
+        /** 各書閱讀進度（bookId → 進度），書架續讀展示。 */
+        val progress: Map<String, ReadingProgressStore.Progress> = emptyMap(),
     )
 
     private val _state = MutableStateFlow(UiState())
@@ -117,7 +120,8 @@ class LibraryViewModel(private val container: AppContainer) : ViewModel() {
             container.libraryStore.unit(it)
         }
         _state.value = _state.value.copy(
-            results = sorted, favorites = s.libraryFavorites, recents = recents)
+            results = sorted, favorites = s.libraryFavorites, recents = recents,
+            progress = container.readingProgress.all())
     }
 
     fun setTab(i: Int) { _state.value = _state.value.copy(tab = i) }
@@ -337,8 +341,19 @@ private fun BookCover(
     val w = if (compact) 88.dp else 100.dp
     val h = if (compact) 118.dp else 136.dp
     val style = coverStyle(u.category)
-    val titleChars = u.title.display(state.simplified)
-        .filter { !it.isWhitespace() }.take(8)
+    // 長書名分列竪排（傳統右→左讀序）：每列 6/7 字，至多兩列，
+    // 超出以「…」收尾——修復「名老中医经验集」等長名截斷不全
+    val perCol = if (compact) 6 else 7
+    val allChars = u.title.display(state.simplified)
+        .filter { !it.isWhitespace() }
+    val titleCols: List<String> = run {
+        val cols = allChars.chunked(perCol)
+        when {
+            cols.size <= 1 -> cols
+            cols.size == 2 -> cols
+            else -> listOf(cols[0], cols[1].dropLast(1) + "…")
+        }
+    }
     val sealChar = u.category.display(state.simplified)
         .firstOrNull { !it.isWhitespace() } ?: '醫'
     Column(Modifier.width(w)) {
@@ -371,24 +386,29 @@ private fun BookCover(
                     }
                 }
             }
-            // 竪排題簽（書名紙簽，仿古籍簽條）
-            Column(
+            // 竪排題簽（書名紙簽，仿古籍簽條；多列右→左讀序）
+            Row(
                 Modifier.align(Alignment.TopStart)
                     .padding(start = 15.dp, top = 7.dp)
-                    .width(if (compact) 24.dp else 28.dp)
                     .background(COVER_PAPER, RoundedCornerShape(2.dp))
-                    .padding(vertical = 6.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(1.dp),
+                    .padding(vertical = 6.dp, horizontal = 3.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                titleChars.forEach { ch ->
-                    Text(
-                        ch.toString(),
-                        color = COVER_INK,
-                        fontSize = if (compact) 11.sp else 12.sp,
-                        lineHeight = if (compact) 12.sp else 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                    )
+                titleCols.asReversed().forEach { col ->
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(1.dp),
+                    ) {
+                        col.forEach { ch ->
+                            Text(
+                                ch.toString(),
+                                color = COVER_INK,
+                                fontSize = if (compact) 11.sp else 12.sp,
+                                lineHeight = if (compact) 12.sp else 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
                 }
             }
             // 朱文分類印（不同分類印文不同）
@@ -425,13 +445,24 @@ private fun BookCover(
                 )
             }
         }
-        Text(
-            listOf(u.category, u.author).filter { it.isNotBlank() }
-                .joinToString(" · ").display(state.simplified),
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 1, overflow = TextOverflow.Ellipsis,
-        )
+        val prog = state.progress[u.id]
+        if (prog != null && (prog.section.isNotBlank() || prog.paraIndex > 0)) {
+            Text(
+                "读至 · " + (prog.section.ifBlank { "卷首" })
+                    .display(state.simplified).take(7),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.primary,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        } else {
+            Text(
+                listOf(u.category, u.author).filter { it.isNotBlank() }
+                    .joinToString(" · ").display(state.simplified),
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
 }
 

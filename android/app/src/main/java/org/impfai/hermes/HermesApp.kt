@@ -14,6 +14,7 @@ import org.impfai.hermes.data.HermesRepository
 import org.impfai.hermes.engine.AnnotationStore
 import org.impfai.hermes.engine.LibraryStore
 import org.impfai.hermes.engine.LocalClauseStore
+import org.impfai.hermes.engine.ReadingProgressStore
 import org.impfai.hermes.engine.SkillStore
 
 /**
@@ -26,6 +27,7 @@ class AppContainer(app: Application) {
     val skillStore = SkillStore(app)
     val libraryStore = LibraryStore(app)
     val annotationStore = AnnotationStore(app)
+    val readingProgress = ReadingProgressStore(app)
     val apiFactory = ApiClientFactory()
     val auditLog = AuditLog(File(app.filesDir, "audit"))
     val chatHistory = ChatHistoryStore(File(app.filesDir, "chats"))
