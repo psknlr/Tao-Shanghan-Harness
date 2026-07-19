@@ -88,6 +88,7 @@ import org.impfai.hermes.core.model.CitationReport
 import org.impfai.hermes.core.model.DirectEvidenceItem
 import org.impfai.hermes.core.model.EvidenceCardData
 import org.impfai.hermes.core.model.EvidenceGrade
+import org.impfai.hermes.core.model.Markdown
 import org.impfai.hermes.core.model.TraceStepView
 import org.impfai.hermes.core.model.evidenceGradeForLayer
 import org.impfai.hermes.core.model.humanizeTrace
@@ -98,6 +99,7 @@ import org.impfai.hermes.data.RepoResult
 import org.impfai.hermes.engine.DocxWriter
 import org.impfai.hermes.ui.common.CitationBadge
 import org.impfai.hermes.ui.common.LayerBadge
+import org.impfai.hermes.ui.common.MarkdownText
 import org.impfai.hermes.ui.common.SafetyNoticeBar
 import org.impfai.hermes.ui.common.display
 import org.impfai.hermes.ui.common.rememberContainer
@@ -230,10 +232,53 @@ class AgentViewModel(private val container: AppContainer) : ViewModel() {
                     2, "问：" + item.text.display(st.simplified))
                 is ChatItem.Bot -> {
                     val d = item.data
-                    b += DocxWriter.Block.Para(
-                        splitThink(d.answer ?: d.message ?: "")
-                            .visible.ifBlank { d.answer ?: d.message ?: "" }
-                            .display(st.simplified))
+                    // 回答按 Markdown 塊落地：標題→Word 標題、表格→Word
+                    // 表格、列表→項目行——而非整段原始 ###/| 文本
+                    val answerMd = splitThink(d.answer ?: d.message ?: "")
+                        .visible.ifBlank { d.answer ?: d.message ?: "" }
+                        .display(st.simplified)
+                    Markdown.parse(answerMd).forEach { blk ->
+                        when (blk) {
+                            is Markdown.Block.Heading ->
+                                b += DocxWriter.Block.Heading(
+                                    minOf(blk.level + 2, 4),
+                                    Markdown.plain(blk.text))
+                            is Markdown.Block.Paragraph ->
+                                b += DocxWriter.Block.Para(
+                                    Markdown.plain(blk.text))
+                            is Markdown.Block.Bullets -> blk.items.forEach {
+                                b += DocxWriter.Block.Para(
+                                    "• " + Markdown.plain(it))
+                            }
+                            is Markdown.Block.Ordered ->
+                                blk.items.forEach { (no, it) ->
+                                    b += DocxWriter.Block.Para(
+                                        "$no " + Markdown.plain(it))
+                                }
+                            is Markdown.Block.Quote ->
+                                b += DocxWriter.Block.Para(
+                                    Markdown.plain(blk.text), italic = true)
+                            is Markdown.Block.Code ->
+                                b += DocxWriter.Block.Para(blk.text)
+                            is Markdown.Block.Table -> {
+                                // 無分隔行的表格 header 為空——Word 表格
+                                // 行不能沒有單元格，提升首行為表頭
+                                val hdr = blk.header.ifEmpty {
+                                    blk.rows.firstOrNull().orEmpty()
+                                }
+                                val rows = if (blk.header.isEmpty())
+                                    blk.rows.drop(1) else blk.rows
+                                if (hdr.isNotEmpty()) {
+                                    b += DocxWriter.Block.Table(
+                                        hdr.map { Markdown.plain(it) },
+                                        rows.map { r ->
+                                            r.map { Markdown.plain(it) }
+                                        })
+                                }
+                            }
+                            Markdown.Block.Divider -> {}
+                        }
+                    }
                     val report = d.citationReport
                     b += DocxWriter.Block.Para(
                         "引用核验：" + when {
@@ -754,11 +799,11 @@ fun AgentScreen(
                                     }
                                 }
                                 if (sp.visible.isNotBlank() || !sp.inThink) {
+                                    // 流式階段同樣走 Markdown 渲染（解析器
+                                    // 對未閉合圍欄/殘缺表格行流式容錯）
                                     SelectionContainer {
-                                        Text(sp.visible
-                                            .display(state.simplified) + " ▌",
-                                            style = MaterialTheme
-                                                .typography.bodyMedium)
+                                        MarkdownText(sp.visible
+                                            .display(state.simplified) + " ▌")
                                     }
                                 }
                             } else {
@@ -1009,13 +1054,13 @@ private fun BotCard(
                 ThinkSection(split.think, simplified)
             }
 
-            // 結論（SelectionContainer：可長按自由選擇複製）
+            // 結論：Markdown 渲染（標題/表格/列表），SelectionContainer
+            // 內仍可長按自由選擇複製
             SelectionContainer {
-                Text(
+                MarkdownText(
                     split.visible.ifBlank {
                         (data.answer ?: data.message ?: "")
                     }.display(simplified),
-                    style = MaterialTheme.typography.bodyMedium,
                 )
             }
             data.clarification?.let {
